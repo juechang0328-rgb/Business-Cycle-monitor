@@ -33,7 +33,7 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - _width(text))
 
 
-def compute(panel: pd.DataFrame, confirm: int = 63):
+def compute(panel: pd.DataFrame, confirm: int = 2):
     G, g_parts = scoring.build_axis(panel, cfg.GROWTH_SPECS)
     I, i_parts = scoring.build_axis(panel, cfg.INFLATION_SPECS)
     return stages.run(G, I, confirm=confirm), g_parts, i_parts
@@ -54,7 +54,7 @@ def render_text(result, g_parts, i_parts, panel) -> str:
     raw = int(last["raw_stage"])
     if raw != stage and raw != 0:
         lines.append(f"  ⚠ 原始判定已轉為 階段{raw} {stages.STAGE_NAMES[raw]}，"
-                     f"尚未滿足連續確認天數，暫不換檔")
+                     f"尚未滿足連續確認月數，暫不換檔")
 
     def block(title, parts, specs):
         out = ["", f"  【{title}】成分 z-score（3個月動能）"]
@@ -110,17 +110,25 @@ def main() -> int:
     p.add_argument("--start", default="2015-01-01",
                    help="抓取起始日（需早於顯示區間，供 z-score 建立基準）")
     p.add_argument("--years", type=int, default=3, help="儀表板顯示最近幾年（預設 3）")
-    p.add_argument("--confirm", type=int, default=63,
-                   help="換檔需連續確認的交易日數（預設 63≈3個月；調小會更敏感也更雜亂）")
+    p.add_argument("--confirm", type=int, default=2,
+                   help="換檔需連續確認的月數（預設 2；調小更敏感也更雜亂）")
     p.add_argument("--html", nargs="?", const="dashboard.html", default=None,
                    help="產生 HTML 儀表板")
     p.add_argument("--csv", help="匯出完整時間序列")
     p.add_argument("--demo", action="store_true", help="用合成資料預覽版面（不連網）")
     p.add_argument("--cache", help="快取檔路徑；抓取失敗時沿用，成功時併入更新")
+    p.add_argument("--offline", action="store_true",
+                   help="只讀快取、完全不連網（需搭配 --cache）")
     args = p.parse_args()
 
     if args.demo:
         panel = synthetic_panel()
+    elif args.offline:
+        panel = load_cache(args.cache) if args.cache else None
+        if panel is None:
+            print("離線模式需要可用的 --cache 檔案。", file=sys.stderr)
+            return 1
+        print(f"  離線模式：讀取 {args.cache}，最後更新 {panel.index[-1].date()}")
     else:
         cached = load_cache(args.cache) if args.cache else None
         try:

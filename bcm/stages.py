@@ -77,16 +77,31 @@ def apply_hysteresis(raw: pd.Series, confirm: int = 63) -> pd.Series:
     return pd.Series(out, index=raw.index, name="stage")
 
 
-def run(G: pd.Series, I: pd.Series, momentum_lookback: int = 63,
-        confirm: int = 63) -> pd.DataFrame:
-    """完整流程：由 G/I 算出動能、原始階段與遲滯後的正式階段。"""
-    dG = G - G.shift(momentum_lookback)
-    dI = I - I.shift(momentum_lookback)
-    raw = classify(G, dG, I)
-    stage = apply_hysteresis(raw, confirm=confirm)
+def run(G: pd.Series, I: pd.Series, freq: str = "ME",
+        momentum_periods: int = 3, confirm: int = 2) -> pd.DataFrame:
+    """完整流程：由 G/I 算出動能、原始階段與遲滯後的正式階段。
+
+    階段判定在**月頻**上進行，不是日頻。原因是實測出來的：
+    日頻的原始判定中位連續長度只有 2 天，因此任何「需連續 N 日」的遲滯條件
+    要嘛形同虛設（N 小），要嘛永遠達不到而把階段鎖死（N 大）。
+    景氣階段本來就是月度概念，在月頻上判定才有意義。
+
+    G/I 仍以日頻回傳供圖表使用；階段以月頻判定後再展開回日頻。
+    """
+    g_m = G.resample(freq).last().dropna()
+    i_m = I.resample(freq).last().dropna()
+    dg_m = g_m - g_m.shift(momentum_periods)
+    raw_m = classify(g_m, dg_m, i_m)
+    stage_m = apply_hysteresis(raw_m, confirm=confirm)
+
+    dG = (G.resample(freq).last() - G.resample(freq).last().shift(momentum_periods)
+          ).reindex(G.index, method="ffill")
+    dI = (I.resample(freq).last() - I.resample(freq).last().shift(momentum_periods)
+          ).reindex(I.index, method="ffill")
     return pd.DataFrame({
         "G": G, "dG": dG, "I": I, "dI": dI,
-        "raw_stage": raw, "stage": stage,
+        "raw_stage": raw_m.reindex(G.index, method="ffill").fillna(0).astype(int),
+        "stage": stage_m.reindex(G.index, method="ffill").fillna(0).astype(int),
     })
 
 

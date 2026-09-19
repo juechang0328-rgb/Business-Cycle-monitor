@@ -382,7 +382,7 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
     pending = ""
     if raw != stage and raw != 0:
         pending = (f'<div class="note">⚠ 原始判定已轉為 <b>階段{raw} '
-                   f'{stages.STAGE_NAMES[raw]}</b>，但尚未滿足連續確認天數，'
+                   f'{stages.STAGE_NAMES[raw]}</b>，但尚未滿足連續確認月數，'
                    f'因此正式階段暫不換檔 —— 這是轉折觀察期，值得留意。</div>')
 
     # 長期時間軸用完整歷史；一個景氣循環約 4-5 年，只看三年看不到完整循環
@@ -496,7 +496,7 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
 
 <footer>
   成分數值為三個月動能的滾動 z-score（截斷於 ±3）。
-  階段換檔需連續成立達設定天數，以避免分數在 0 附近來回時頻繁跳動。<br>
+  階段判定在月頻上進行，換檔需連續兩個月成立。<br>
   資料來源：yfinance（價格）、FRED 公開 CSV（利率與利差）。<br>
   市場資料反映的是<b>對景氣的預期</b>而非景氣本身 —— 反應快，但會有假訊號。
   本頁僅供研究參考，不構成投資建議。

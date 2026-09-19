@@ -122,16 +122,16 @@ def _synthetic_cycle(n_days=2600, period=1300):
 
 def test_full_cycle_visits_every_stage_in_order():
     G, I = _synthetic_cycle()
-    out = stages.run(G, I, momentum_lookback=63, confirm=5)
+    out = stages.run(G, I, momentum_periods=3, confirm=2)
     seq = out["stage"].loc[out["stage"] > 0]
     # 壓縮成不重複的階段序列
     order = [s for s, nxt in zip(seq, list(seq[1:]) + [None]) if s != nxt]
     assert set(order) >= {1, 2, 3, 4, 5, 6}, f"未走完六階段：{order}"
-    # 檢查其中一段完整循環是遞增（允許 6→1 繞回）
-    wrapped = [o for o in order]
-    transitions = {(a, b) for a, b in zip(wrapped, wrapped[1:])}
-    legal = {(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 1)}
-    assert transitions <= legal, f"出現非法跳階：{transitions - legal}"
+    # 循環必須向前推進。允許跳過一階（月頻取樣下，某階段可能不足一個月
+    # 就被跨過），但絕不可倒退 —— 倒退代表判定邏輯有問題。
+    for a, b in zip(order, order[1:]):
+        step = (b - a) % 6
+        assert step in (1, 2), f"階段 {a} → {b} 並非向前推進"
 
 
 # ------------------------------------------------------------------ 儀表板
@@ -141,7 +141,7 @@ def test_dashboard_renders_valid_page():
     from bcm import dashboard, indicators as cfg
 
     panel = run.synthetic_panel()
-    result, gp, ip = run.compute(panel, confirm=10)
+    result, gp, ip = run.compute(panel, confirm=2)
     cutoff = result.index[-1] - pd.DateOffset(years=3)
     view = result.loc[result.index >= cutoff]
     html = dashboard.render_html(view, gp.loc[gp.index >= cutoff],
@@ -165,7 +165,7 @@ def test_dashboard_marks_demo_only_when_asked():
     from bcm import dashboard, indicators as cfg
 
     panel = run.synthetic_panel()
-    result, gp, ip = run.compute(panel, confirm=10)
+    result, gp, ip = run.compute(panel, confirm=2)
     html = dashboard.render_html(result, gp, ip, panel, cfg, demo=False)
     assert "示範頁面" not in html
 
@@ -192,7 +192,7 @@ def test_short_window_warns_that_it_is_under_one_cycle():
     from bcm import dashboard, indicators as cfg
 
     panel = run.synthetic_panel()
-    result, gp, ip = run.compute(panel, confirm=10)
+    result, gp, ip = run.compute(panel, confirm=2)
     short = result.loc[result.index >= result.index[-1] - pd.DateOffset(years=2)]
     html = dashboard.render_html(short, gp, ip, panel, cfg, full_result=short)
     assert "短於一個完整景氣循環" in html
