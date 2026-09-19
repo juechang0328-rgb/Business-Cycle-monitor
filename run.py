@@ -117,6 +117,10 @@ def main() -> int:
     p.add_argument("--csv", help="匯出完整時間序列")
     p.add_argument("--demo", action="store_true", help="用合成資料預覽版面（不連網）")
     p.add_argument("--cache", help="快取檔路徑；抓取失敗時沿用，成功時併入更新")
+    p.add_argument("--econ-start", default="1967-01-01",
+                   help="econ 長歷史序列的抓取起點（預設 1967，涵蓋約 8 次衰退）")
+    p.add_argument("--with-econ", action="store_true",
+                   help="一併抓取 econ 組合的長歷史經濟序列（存入同一份快取供檢驗用）")
     p.add_argument("--offline", action="store_true",
                    help="只讀快取、完全不連網（需搭配 --cache）")
     args = p.parse_args()
@@ -134,6 +138,16 @@ def main() -> int:
         try:
             fresh = build_panel(cfg.YAHOO_TICKERS, cfg.FRED_CODES, start=args.start)
             panel = merge_panel(cached, fresh)
+            if args.with_econ:
+                # 長歷史經濟序列獨立抓取：它的起點遠早於市場 ETF，
+                # 且抓取失敗不應影響每日儀表板
+                try:
+                    econ = build_panel([], cfg.ECON_FRED, start=args.econ_start)
+                    panel = merge_panel(panel, econ)
+                    print(f"  已併入 econ 長歷史序列（起自 {econ.index[0].date()}）")
+                except Exception as ee:
+                    print(f"⚠ econ 序列抓取失敗（{ee}），主資料不受影響",
+                          file=sys.stderr)
             if args.cache:
                 save_cache(panel, args.cache)
                 print(f"  快取已更新：{args.cache}（{len(panel)} 筆）")

@@ -35,7 +35,10 @@ jobs:
       - name: 抓取資料並產生儀表板
         run: |
           mkdir -p site
-          python run.py --html site/index.html --cache data/panel.csv
+          python run.py --html site/index.html --cache data/panel.csv --with-econ
+
+      - name: 檢驗模型是否具備訊息量
+        run: python validate.py --cache data/panel.csv
 
       - name: 寫回資料快取
         run: |

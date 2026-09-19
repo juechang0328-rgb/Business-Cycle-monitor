@@ -61,10 +61,54 @@ def hit_rate(result: pd.DataFrame, panel: pd.DataFrame, h: int,
     return hits, total, rows
 
 
+def economic_test(G: pd.Series, panel: pd.DataFrame) -> None:
+    """對『經濟』做檢驗，而非對『股價』。
+
+    這是比預測股價合理得多的目標：股價接近效率市場，幾乎無法預測；
+    經濟活動有強自我相關，本來就可預測。景氣循環模型的任務是告訴你
+    經濟在哪裡，不是幫你打敗市場 —— 用股價當靶子是設了一個不該設的門檻。
+    """
+    if "INDPRO" not in panel.columns:
+        print("\n【經濟檢驗】略過：快取中沒有 INDPRO（工業生產）。")
+        print("  排程下次執行會補上，或用 --with-econ 重新抓取。")
+        return
+
+    ip = panel["INDPRO"].resample("ME").last()
+    g_m = G.resample("ME").last()
+    print("\n【經濟檢驗】G 與『未來工業生產年增率』的相關係數")
+    print("  （這才是模型該回答的問題：經濟接下來會轉強還是轉弱）")
+    print(f"  {'領先月數':<12}{'相關係數':>10}{'樣本月數':>10}")
+    print("  " + "─" * 32)
+    for lead in (0, 3, 6, 9, 12):
+        fwd = ip.pct_change(12).shift(-lead)
+        d = pd.concat([g_m, fwd], axis=1).dropna()
+        if len(d) < 24:
+            continue
+        print(f"  {lead:<12}{d.iloc[:, 0].corr(d.iloc[:, 1]):>10.3f}{len(d):>10}")
+
+    if "USREC" in panel.columns:
+        rec = panel["USREC"].resample("ME").last()
+        print("\n  NBER 衰退期 vs 非衰退期的 G 平均值：")
+        d = pd.concat([g_m, rec], axis=1).dropna()
+        d.columns = ["g", "rec"]
+        for lab, m in [("衰退期", d.rec == 1), ("非衰退期", d.rec == 0)]:
+            if m.sum():
+                print(f"    {lab:<10} N={m.sum():>4}  G 平均 {d.g[m].mean():+.2f}")
+        print("    → 兩者差距越大，代表 G 越能分辨衰退。")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="檢驗階段判定是否具備訊息量")
     p.add_argument("--cache", default="data/panel.csv")
+    p.add_argument("--profile", choices=["mvp", "full", "econ"],
+                   help="改用指定的指標組合檢驗")
     args = p.parse_args()
+
+    if args.profile:
+        cfg.PROFILE = args.profile
+        a = cfg.active()
+        cfg.GROWTH_SPECS, cfg.INFLATION_SPECS = a["growth"], a["inflation"]
+        print(f"指標組合：{args.profile}\n")
 
     panel = load_cache(args.cache)
     if panel is None:
@@ -94,6 +138,8 @@ def main() -> int:
     for s, n, cells, h_s in rows:
         print(f"階段{s} {stages.STAGE_NAMES[s]:<6}{n:>6} │ "
               f"{cells[0]:>12}{cells[1]:>12}{cells[2]:>12} │ {h_s}/3")
+
+    economic_test(G, panel)
 
     print("\n判讀：命中率需顯著高於 50% 才代表有訊息量。")
     print("      50% 上下＝與丟銅板無異，此時任何『當前階段』的宣稱都不該被採信。")

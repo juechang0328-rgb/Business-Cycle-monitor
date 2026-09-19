@@ -102,6 +102,10 @@ FULL_DASHBOARD = MVP_DASHBOARD + [
 
 # ------------------------------------------------------------------ 選用設定
 def active() -> dict:
+    if PROFILE == "econ":
+        return {"yahoo": [], "fred": ECON_FRED, "growth": ECON_GROWTH,
+                "inflation": ECON_INFLATION, "dashboard": ECON_DASHBOARD,
+                "reality": ECON_REALITY}
     if PROFILE == "full":
         return {"yahoo": FULL_YAHOO, "fred": FULL_FRED, "growth": FULL_GROWTH,
                 "inflation": FULL_INFLATION, "dashboard": FULL_DASHBOARD}
@@ -110,8 +114,63 @@ def active() -> dict:
 
 
 _a = active()
+REALITY_CHECK = _a.get("reality", REALITY_CHECK)
 YAHOO_TICKERS = _a["yahoo"]
 FRED_CODES = _a["fred"]
 GROWTH_SPECS = _a["growth"]
 INFLATION_SPECS = _a["inflation"]
 DASHBOARD = _a["dashboard"]
+
+
+# ==================================================================== ECON
+# 以「具實證領先性質的經濟指標」建構，而非市場價格動能。
+# 選用原則：全部在 FRED（免 API key），且歷史夠長 —— 這是能不能驗證的關鍵。
+# 市場 ETF（XLI/XLU 等）1998 年才有，econ 組合可回溯到 1967 年，
+# 涵蓋約 8 次衰退而非 1 次。
+ECON_FRED = [
+    # --- 成長軸：領先指標 ---
+    "PERMIT",        # 建照核發（1960-）利率最敏感部門，歷史上最可靠的單一領先指標
+    "IC4WSA",        # 初領失業金4週均（1967-）週頻，轉折極靈敏
+    "AWHMAN",        # 製造業每週工時（1939-）先減工時再減人
+    "T10Y2Y",        # 殖利率曲線 10Y-2Y（1976-）用水準，不用動能
+    "NEWORDER",      # 核心資本財新訂單（1992-）企業資本支出意願
+    # --- 通膨軸 ---
+    "CPIAUCSL",      # CPI（1947-）
+    "PPIACO",        # 生產者物價（1913-）領先 CPI 約 1-2 季
+    "T10YIE",        # 損益兩平通膨率（2003-）
+    # --- 驗證目標（不計入分數）---
+    "INDPRO",        # 工業生產（1919-）代表「景氣本身」
+    "USREC",         # NBER 衰退認定（1854-）官方答案
+    "UNRATE",        # 失業率（1948-）
+]
+
+ECON_GROWTH = [
+    {"name": "建照核發",      "series": "PERMIT",   "mode": "pct",  "weight": 0.25},
+    {"name": "初領失業金",    "series": "IC4WSA",   "mode": "pct",  "weight": 0.25,
+     "invert": True},
+    {"name": "製造業工時",    "series": "AWHMAN",   "mode": "pct",  "weight": 0.15},
+    {"name": "殖利率曲線",    "series": "T10Y2Y",   "mode": "diff", "weight": 0.20},
+    {"name": "資本財新訂單",  "series": "NEWORDER", "mode": "pct",  "weight": 0.15},
+]
+
+ECON_INFLATION = [
+    {"name": "CPI",        "series": "CPIAUCSL", "mode": "pct",  "weight": 0.40},
+    {"name": "PPI",        "series": "PPIACO",   "mode": "pct",  "weight": 0.35},
+    {"name": "通膨預期",   "series": "T10YIE",   "mode": "diff", "weight": 0.25},
+]
+
+ECON_DASHBOARD = [
+    ("建照核發",     "PERMIT",   "pct"),
+    ("初領失業金",   "IC4WSA",   "pct"),
+    ("工業生產",     "INDPRO",   "pct"),
+    ("失業率",       "UNRATE",   "diff"),
+    ("10Y-2Y 利差",  "T10Y2Y",   "diff"),
+    ("CPI",          "CPIAUCSL", "pct"),
+]
+
+ECON_REALITY = [
+    ("工業生產年增率", "INDPRO", "yoy",
+     "景氣本身。模型若有效，G 轉折應領先這條線數個月。", True),
+    ("失業率", "UNRATE", "level",
+     "落後指標，用來事後確認衰退是否真的發生。", False),
+]
