@@ -1,0 +1,601 @@
+# 景氣循環監測指標設定檔
+# 對應文件：docs/01-景氣循環監測指標研究.md
+# layer: L1=領先 / L2=同時 / L3=落後 / L4=市場內生
+# axis:  growth=成長軸 / inflation=通膨軸 / financial=金融條件 / rotation=風險偏好
+# transform: yoy | m3_ann(3個月年化) | m6_ann(6個月年化) | level | zscore
+# invert: true 表示數值上升代表景氣轉弱（如失業金申請）
+
+meta:
+  version: "1.0"
+  zscore_window_months: 120
+  momentum_lookback_months: 3
+  stage_confirm_months: 2          # 連續2個月才換檔
+  shock_flag:
+    series: hy_oas
+    rule: "1個月變動 > 150bp"
+
+# ---------------------------------------------------------------- 美國／全球
+series:
+
+  # ===== 成長軸 · 領先 =====
+  building_permits:
+    name_zh: 建照核發
+    source: fred
+    code: PERMIT
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: m6_ann
+    weight: 0.15
+
+  housing_starts:
+    name_zh: 新屋開工
+    source: fred
+    code: HOUST
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: m6_ann
+    weight: 0.0                    # 與建照高度共線，預設不計權
+
+  core_capex_orders:
+    name_zh: 核心資本財新訂單（非國防扣飛機）
+    source: fred
+    code: NEWORDER
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: m6_ann
+    weight: 0.10
+
+  initial_claims_4wk:
+    name_zh: 初領失業金4週移動平均
+    source: fred
+    code: IC4WSA
+    layer: L1
+    axis: growth
+    freq: weekly
+    transform: m6_ann
+    invert: true
+    weight: 0.15
+
+  temp_help:
+    name_zh: 臨時性僱員人數
+    source: fred
+    code: TEMPHELPS
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: m6_ann
+    weight: 0.10
+
+  avg_weekly_hours_mfg:
+    name_zh: 製造業每週工時
+    source: fred
+    code: AWHMAN
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: yoy
+    weight: 0.0
+
+  ism_mfg:
+    name_zh: ISM 製造業 PMI
+    source: manual            # FRED 自2016年起不再提供，需 ISM 官方 / DBnomics
+    code: ISM_MFG_PMI
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: level
+    thresholds: { expansion: 50, stress: 48, boom: 57 }
+    weight: 0.0               # 總指數改用下方新訂單-存貨差值
+
+  ism_neworders_minus_inventories:
+    name_zh: ISM 新訂單 − 客戶端存貨
+    source: derived
+    formula: "ISM_NEW_ORDERS - ISM_CUSTOMER_INVENTORIES"
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: level
+    weight: 0.20
+
+  oecd_cli_us:
+    name_zh: OECD 綜合領先指標（美國，振幅調整）
+    source: fred
+    code: USALOLITONOSTSAM
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: level
+    thresholds: { trend: 100 }
+    weight: 0.0               # 作為獨立基準線，不併入自建分數
+
+  yield_curve_10y3m:
+    name_zh: 殖利率曲線 10Y-3M
+    source: fred
+    code: T10Y3M
+    layer: L1
+    axis: financial
+    freq: daily
+    transform: level
+    weight: 0.15
+    note: "訊號重點在『倒掛解除後的牛市陡峭化』，非倒掛本身"
+
+  korea_exports:
+    name_zh: 韓國出口年增率（含每月前20日速報）
+    source: manual
+    code: KR_EXPORTS_YOY
+    layer: L1
+    axis: growth
+    freq: monthly
+    transform: yoy
+    weight: 0.15
+
+  # ===== 成長軸 · 同時 =====
+  industrial_production:
+    name_zh: 工業生產指數
+    source: fred
+    code: INDPRO
+    layer: L2
+    axis: growth
+    freq: monthly
+    transform: yoy
+
+  nonfarm_payrolls:
+    name_zh: 非農就業人數
+    source: fred
+    code: PAYEMS
+    layer: L2
+    axis: growth
+    freq: monthly
+    transform: m3_ann
+
+  real_personal_income_ex_transfer:
+    name_zh: 實質個人所得（扣移轉支付）
+    source: fred
+    code: W875RX1
+    layer: L2
+    axis: growth
+    freq: monthly
+    transform: yoy
+
+  real_mfg_trade_sales:
+    name_zh: 實質製造業與貿易銷售
+    source: fred
+    code: CMRMTSPL
+    layer: L2
+    axis: growth
+    freq: monthly
+    transform: yoy
+
+  retail_sales:
+    name_zh: 零售銷售
+    source: fred
+    code: RSAFS
+    layer: L2
+    axis: growth
+    freq: monthly
+    transform: yoy
+
+  cfnai_ma3:
+    name_zh: 芝加哥Fed全國活動指數（3個月均）
+    source: fred
+    code: CFNAIMA3
+    layer: L2
+    axis: growth
+    freq: monthly
+    transform: level
+    thresholds: { recession: -0.7, overheat: 0.7 }
+
+  # ===== 成長軸 · 落後（僅供確認）=====
+  unemployment_rate:
+    name_zh: 失業率
+    source: fred
+    code: UNRATE
+    layer: L3
+    axis: growth
+    freq: monthly
+    transform: level
+    invert: true
+
+  sahm_rule:
+    name_zh: Sahm Rule 即時值
+    source: fred
+    code: SAHMREALTIME
+    layer: L3
+    axis: growth
+    freq: monthly
+    transform: level
+    thresholds: { recession: 0.50 }
+
+  inventory_sales_ratio:
+    name_zh: 總體存貨／銷售比
+    source: fred
+    code: ISRATIO
+    layer: L3
+    axis: growth
+    freq: monthly
+    transform: level
+    note: "見頂回落＝去庫存結束，階段2→3 的驗證訊號"
+
+  ci_loans:
+    name_zh: 商業與工業放款餘額
+    source: fred
+    code: BUSLOANS
+    layer: L3
+    axis: financial
+    freq: weekly
+    transform: yoy
+
+  # ===== 通膨軸 =====
+  crb_commodity:
+    name_zh: 商品指數（CRB / BCOM）
+    source: manual
+    code: BCOM
+    layer: L1
+    axis: inflation
+    freq: daily
+    transform: m6_ann
+    weight: 0.30
+
+  copper:
+    name_zh: 銅價
+    source: yfinance
+    code: "HG=F"
+    layer: L1
+    axis: inflation
+    freq: daily
+    transform: m6_ann
+
+  gold:
+    name_zh: 黃金
+    source: yfinance
+    code: "GC=F"
+    layer: L4
+    axis: inflation
+    freq: daily
+    transform: level
+
+  copper_gold_ratio:
+    name_zh: 銅金比
+    source: derived
+    formula: "copper / gold"
+    layer: L4
+    axis: inflation
+    freq: daily
+    transform: m6_ann
+    weight: 0.20
+    note: "與10Y殖利率高度同步；兩者背離常為轉折前兆"
+
+  ppi:
+    name_zh: 生產者物價指數
+    source: fred
+    code: PPIACO
+    layer: L1
+    axis: inflation
+    freq: monthly
+    transform: yoy
+    weight: 0.20
+
+  core_cpi:
+    name_zh: 核心CPI
+    source: fred
+    code: CPILFESL
+    layer: L2
+    axis: inflation
+    freq: monthly
+    transform: m3_ann
+    weight: 0.20
+
+  core_pce:
+    name_zh: 核心PCE物價
+    source: fred
+    code: PCEPILFE
+    layer: L2
+    axis: inflation
+    freq: monthly
+    transform: m3_ann
+
+  breakeven_5y5y:
+    name_zh: 5年後5年期通膨預期
+    source: fred
+    code: T5YIFR
+    layer: L4
+    axis: inflation
+    freq: daily
+    transform: level
+    weight: 0.10
+
+  brent:
+    name_zh: 布蘭特原油
+    source: fred
+    code: DCOILBRENTEU
+    layer: L1
+    axis: inflation
+    freq: daily
+    transform: m6_ann
+
+  bdi:
+    name_zh: 波羅的海乾散貨指數
+    source: manual
+    code: BDI
+    layer: L1
+    axis: inflation
+    freq: daily
+    transform: m3_ann
+
+  # ===== 金融條件 =====
+  hy_oas:
+    name_zh: 高收益債選擇權調整利差
+    source: fred
+    code: BAMLH0A0HYM2
+    layer: L4
+    axis: financial
+    freq: daily
+    transform: level
+    thresholds: { stress: 500, recession: 800 }
+    invert: true
+
+  ig_oas:
+    name_zh: 投資等級債利差
+    source: fred
+    code: BAMLC0A0CM
+    layer: L4
+    axis: financial
+    freq: daily
+    transform: level
+    invert: true
+
+  nfci:
+    name_zh: 芝加哥Fed全國金融條件指數
+    source: fred
+    code: NFCI
+    layer: L4
+    axis: financial
+    freq: weekly
+    transform: level
+    thresholds: { tight: 0 }
+    invert: true
+
+  real_rate_10y:
+    name_zh: 10年期實質利率（TIPS）
+    source: fred
+    code: DFII10
+    layer: L4
+    axis: financial
+    freq: daily
+    transform: level
+    invert: true
+
+  sloos_ci_tightening:
+    name_zh: SLOOS 企業放款標準收緊淨比率
+    source: fred
+    code: DRTSCILM
+    layer: L1
+    axis: financial
+    freq: quarterly
+    transform: level
+    invert: true
+
+  dollar_index:
+    name_zh: 美元指數（廣義名目）
+    source: fred
+    code: DTWEXBGS
+    layer: L4
+    axis: financial
+    freq: daily
+    transform: yoy
+    invert: true
+
+  # ===== 風險偏好輪動 =====
+  cyclical_vs_defensive:
+    name_zh: 循環股／防禦股比值
+    source: yfinance
+    formula: "XLI / XLU"
+    layer: L4
+    axis: rotation
+    freq: daily
+    transform: m3_ann
+
+  discretionary_vs_staples:
+    name_zh: 可選消費／必需消費
+    source: yfinance
+    formula: "XLY / XLP"
+    layer: L4
+    axis: rotation
+    freq: daily
+    transform: m3_ann
+
+  semis_vs_market:
+    name_zh: 半導體／大盤
+    source: yfinance
+    formula: "SOXX / SPY"
+    layer: L4
+    axis: rotation
+    freq: daily
+    transform: m3_ann
+
+  smallcap_vs_largecap:
+    name_zh: 小型股／大型股
+    source: yfinance
+    formula: "IWM / SPY"
+    layer: L4
+    axis: rotation
+    freq: daily
+    transform: m3_ann
+
+# ---------------------------------------------------------------- 台灣
+taiwan:
+  ndc_monitoring_signal:
+    name_zh: 景氣對策信號（分數）
+    source: ndc
+    endpoint: "https://index.ndc.gov.tw/n/zh_tw/data/eco/indicators_table1"
+    layer: L2
+    freq: monthly
+    release: "每月約27日"
+    lights:
+      blue:        [9, 16]
+      yellow_blue: [17, 22]
+      green:       [23, 31]
+      yellow_red:  [32, 37]
+      red:         [38, 45]
+    components:
+      - 貨幣總計數M1B
+      - 股價指數
+      - 工業生產指數
+      - 工業及服務業加班工時
+      - 海關出口值
+      - 機械及電機設備進口值
+      - 製造業銷售量指數
+      - 製造業營業氣候測驗點
+      - 批發零售及餐飲業營業額
+
+  ndc_leading_index:
+    name_zh: 領先指標（不含趨勢）
+    source: ndc
+    endpoint: "https://index.ndc.gov.tw/n/zh_tw/leading"
+    layer: L1
+    freq: monthly
+    components:
+      - 外銷訂單動向指數
+      - 實質貨幣總計數M1B
+      - 股價指數
+      - 工業及服務業受僱員工淨進入率
+      - 建築物開工樓地板面積
+      - 實質半導體設備進口值
+      - 製造業營業氣候測驗點
+
+  ndc_coincident_index:
+    name_zh: 同時指標（不含趨勢）
+    source: ndc
+    layer: L2
+    freq: monthly
+    components:
+      - 工業生產指數
+      - 電力(企業)總用電量
+      - 製造業銷售量指數
+      - 批發零售及餐飲業營業額
+      - 非農業部門就業人數
+      - 實質海關出口值
+      - 實質機械及電機設備進口值
+
+  ndc_lagging_index:
+    name_zh: 落後指標
+    source: ndc
+    layer: L3
+    freq: monthly
+    components:
+      - 失業率(取倒數)
+      - 製造業單位產出勞動成本指數
+      - 金融業隔夜拆款利率
+      - 全體貨幣機構放款與投資
+      - 製造業存貨率
+
+  export_orders:
+    name_zh: 外銷訂單年增率
+    source: moea
+    layer: L1
+    freq: monthly
+    transform: yoy
+
+  exports:
+    name_zh: 海關出口年增率
+    source: mof
+    layer: L2
+    freq: monthly
+    release: "每月7-9日"
+    transform: yoy
+
+  m1b_m2_spread:
+    name_zh: M1B − M2 年增率剪刀差
+    source: cbc
+    layer: L1
+    freq: monthly
+    transform: level
+    note: "黃金交叉（M1B向上穿越M2）＝資金行情啟動，對應階段2→3"
+
+  tsmc_revenue:
+    name_zh: 台積電月營收年增率
+    source: mops
+    layer: L1
+    freq: monthly
+    release: "每月10日前"
+    transform: yoy
+
+  na_semi_book_to_bill:
+    name_zh: 北美半導體設備B/B值
+    source: semi
+    layer: L1
+    freq: monthly
+    transform: level
+    thresholds: { expansion: 1.0 }
+
+# ---------------------------------------------------------------- 階段判定
+stages:
+  1:
+    name_zh: 景氣衰退
+    assets: { bond: up, equity: down, commodity: down }
+    rule: { G_level: "<0", G_momentum: "<0", I_momentum: "<0" }
+    key_signals:
+      - "ISM < 48 且續降"
+      - "初領失業金4週均突破前一年高點"
+      - "LEI 6個月年化 < -3.5%"
+      - "殖利率曲線由倒掛轉為牛市陡峭化（降息啟動）"
+    confirm: [sahm_rule, cfnai_ma3, nonfarm_payrolls]
+
+  2:
+    name_zh: 景氣谷底
+    assets: { bond: up, equity: up, commodity: down }
+    rule: { G_level: "<0", G_momentum: ">=0", I_momentum: "<0" }
+    key_signals:
+      - "初領失業金見頂回落"
+      - "ISM新訂單回升至50上方（總指數仍<50）"
+      - "建照核發止跌"
+      - "存貨／銷售比見頂"
+      - "HY OAS 見頂回落"
+      - "台灣 M1B 年增率向上穿越 M2"
+    note: "原物料仍跌但股票先漲＝流動性行情／本益比擴張"
+
+  3:
+    name_zh: 景氣復甦
+    assets: { bond: up, equity: up, commodity: up }
+    rule: { G_level: "轉正", G_momentum: ">0", I_level: "低檔回升", I_momentum: ">=0" }
+    key_signals:
+      - "ISM 站上 50"
+      - "工業生產年增轉正"
+      - "EPS 修正廣度由負轉正"
+      - "銅價與 BDI 同步走升、PPI 年增觸底"
+      - "台灣出口連續2-3個月年增正成長、燈號由藍轉黃藍"
+
+  4:
+    name_zh: 景氣擴張
+    assets: { bond: down, equity: up, commodity: up }
+    rule: { G_level: ">0", G_momentum: ">0", I_level: ">0", I_momentum: ">0" }
+    key_signals:
+      - "10Y殖利率轉為上行、央行由降轉升（債券箭頭翻向＝3→4分界）"
+      - "5y5y 通膨預期走升"
+      - "職缺率與離職率高檔、薪資成長加速"
+      - "台灣燈號綠燈（23-31分）"
+
+  5:
+    name_zh: 景氣高峰
+    assets: { bond: down, equity: down, commodity: up }
+    rule: { G_level: ">0", G_momentum: "<0", I_level: ">0", I_momentum: ">0" }
+    key_signals:
+      - "ISM 由 >57 高檔連續2-3個月回落（動能鈍化）"
+      - "殖利率曲線熊市平坦化（2Y上行快於10Y）"
+      - "實質利率轉正並持續上升"
+      - "循環股／防禦股比值見頂、市場廣度惡化"
+      - "台灣燈號黃紅或紅燈、記憶體價格見頂"
+
+  6:
+    name_zh: 景氣趨緩
+    assets: { bond: down, equity: down, commodity: down }
+    rule: { G_level: "轉負", G_momentum: "<0", I_level: "高檔", I_momentum: "<0" }
+    key_signals:
+      - "ISM 跌破 50、新訂單−存貨轉負"
+      - "建照核發連3個月下滑"
+      - "SLOOS 放款標準大幅收緊"
+      - "HY OAS 開始擴大"
+    note: "央行政策遞延使高利率延續，股債商品齊跌，是最痛苦的階段"
