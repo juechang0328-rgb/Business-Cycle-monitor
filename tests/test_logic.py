@@ -1,0 +1,134 @@
+"""純邏輯測試（不碰網路）：以合成資料驗證評分與階段判定。"""
+import numpy as np
+import pandas as pd
+import pytest
+
+from bcm import scoring, stages
+
+
+# ------------------------------------------------------------------ 階段判定
+def test_classify_covers_all_six_stages():
+    cases = {
+        # (G, dG, I) -> 期望階段
+        (-1.0, -0.5, -1.0): 1,   # 成長低且續降、通膨已落 → 衰退
+        (-1.0, +0.3, -1.0): 2,   # 成長低但止跌回升      → 谷底
+        (+0.5, +0.4, -0.5): 3,   # 成長轉正、通膨仍低     → 復甦
+        (+1.0, +0.4, +1.0): 4,   # 成長強、通膨已起       → 擴張
+        (+1.0, -0.4, +1.0): 5,   # 成長仍高但動能轉負     → 高峰
+        (-0.5, -0.4, +1.0): 6,   # 成長轉負、通膨仍高     → 趨緩
+    }
+    for (g, dg, i), expected in cases.items():
+        assert stages.classify_point(g, dg, i) == expected, (g, dg, i)
+
+
+def test_classify_handles_missing_data():
+    assert stages.classify_point(np.nan, 0.1, 0.1) == 0
+    assert stages.classify_point(0.1, np.nan, 0.1) == 0
+    assert stages.classify_point(0.1, 0.1, np.nan) == 0
+
+
+def test_stage_four_five_boundary_is_momentum_not_level():
+    """階段4與5的分界在於動能正負，而非成長水準高低。"""
+    assert stages.classify_point(2.0, +0.1, 1.0) == 4
+    assert stages.classify_point(2.0, -0.1, 1.0) == 5   # 水準更高也一樣是高峰
+
+
+def test_stage_one_six_boundary_is_inflation():
+    """階段6與1的分界在於通膨是否已落（＝債券箭頭何時翻正）。"""
+    assert stages.classify_point(-0.5, -0.5, +0.5) == 6
+    assert stages.classify_point(-0.5, -0.5, -0.5) == 1
+
+
+# ------------------------------------------------------------------ 遲滯
+def test_hysteresis_ignores_short_lived_flips():
+    raw = pd.Series([4] * 30 + [5] * 3 + [4] * 30)
+    out = stages.apply_hysteresis(raw, confirm=10)
+    assert set(out.unique()) == {4}, "3天的雜訊不應觸發換檔"
+
+
+def test_hysteresis_switches_after_confirm_window():
+    raw = pd.Series([4] * 30 + [5] * 30)
+    out = stages.apply_hysteresis(raw, confirm=10)
+    assert out.iloc[29] == 4
+    assert out.iloc[38] == 4, "第10天前仍不換檔"
+    assert out.iloc[39] == 5, "滿10天正式換檔"
+
+
+def test_hysteresis_resets_streak_on_interruption():
+    # 連 9 天 5、被 4 打斷、再連 9 天 5 → 都不該換檔
+    raw = pd.Series([4] * 20 + [5] * 9 + [4] + [5] * 9)
+    out = stages.apply_hysteresis(raw, confirm=10)
+    assert set(out.unique()) == {4}
+
+
+# ------------------------------------------------------------------ 評分
+def test_momentum_modes():
+    s = pd.Series(np.arange(1.0, 101.0))
+    assert scoring.momentum(s, lookback=10, mode="diff").iloc[-1] == pytest.approx(10.0)
+    assert scoring.momentum(s, lookback=10, mode="pct").iloc[-1] == pytest.approx(10 / 90)
+    with pytest.raises(ValueError):
+        scoring.momentum(s, mode="nonsense")
+
+
+def test_zscore_is_standardised():
+    rng = np.random.default_rng(0)
+    s = pd.Series(rng.normal(5.0, 2.0, 2000))
+    z = scoring.zscore(s)
+    tail = z.iloc[800:]
+    assert abs(tail.mean()) < 0.2
+    assert 0.8 < tail.std() < 1.2
+
+
+def test_composite_renormalises_when_a_component_is_missing():
+    idx = pd.RangeIndex(3)
+    a = pd.Series([1.0, 1.0, 1.0], index=idx)
+    b = pd.Series([np.nan, -1.0, 3.0], index=idx)
+    out = scoring.composite({"a": a, "b": b}, {"a": 0.5, "b": 0.5})
+    assert out.iloc[0] == pytest.approx(1.0), "b 缺值時不應把分數往 0 拉"
+    assert out.iloc[1] == pytest.approx(0.0)
+    assert out.iloc[2] == pytest.approx(2.0)
+
+
+def test_composite_rejects_zero_weights():
+    s = pd.Series([1.0, 2.0])
+    with pytest.raises(ValueError):
+        scoring.composite({"a": s}, {"a": 0.0})
+
+
+def test_clip_limits_extremes():
+    s = pd.Series([-99.0, 0.0, 99.0])
+    assert list(scoring.clip_z(s, limit=3.0)) == [-3.0, 0.0, 3.0]
+
+
+def test_invert_flips_sign_in_build_axis():
+    idx = pd.bdate_range("2015-01-01", periods=600)
+    rng = np.random.default_rng(1)
+    panel = pd.DataFrame({"X": 100 + np.cumsum(rng.normal(0, 1, 600))}, index=idx)
+    up, _ = scoring.build_axis(panel, [{"name": "x", "series": "X", "weight": 1.0}])
+    dn, _ = scoring.build_axis(panel, [{"name": "x", "series": "X", "weight": 1.0,
+                                        "invert": True}])
+    assert up.dropna().iloc[-1] == pytest.approx(-dn.dropna().iloc[-1])
+
+
+# ------------------------------------------------- 端到端：合成一個完整循環
+def _synthetic_cycle(n_days=2600, period=1300):
+    """造一個成長領先通膨 1/4 個週期的合成循環，檢查六階段是否依序走完。"""
+    idx = pd.bdate_range("2012-01-01", periods=n_days)
+    t = np.arange(n_days)
+    G = pd.Series(np.sin(2 * np.pi * t / period), index=idx)
+    I = pd.Series(np.sin(2 * np.pi * (t - period / 4) / period), index=idx)
+    return G, I
+
+
+def test_full_cycle_visits_every_stage_in_order():
+    G, I = _synthetic_cycle()
+    out = stages.run(G, I, momentum_lookback=63, confirm=5)
+    seq = out["stage"].loc[out["stage"] > 0]
+    # 壓縮成不重複的階段序列
+    order = [s for s, nxt in zip(seq, list(seq[1:]) + [None]) if s != nxt]
+    assert set(order) >= {1, 2, 3, 4, 5, 6}, f"未走完六階段：{order}"
+    # 檢查其中一段完整循環是遞增（允許 6→1 繞回）
+    wrapped = [o for o in order]
+    transitions = {(a, b) for a, b in zip(wrapped, wrapped[1:])}
+    legal = {(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 1)}
+    assert transitions <= legal, f"出現非法跳階：{transitions - legal}"
