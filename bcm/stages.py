@@ -85,7 +85,8 @@ def apply_hysteresis(raw: pd.Series, confirm: int = 63) -> pd.Series:
 
 
 def run(G: pd.Series, I: pd.Series, freq: str = "ME",
-        momentum_periods: int = 3, confirm: int = 2) -> pd.DataFrame:
+        momentum_periods: int = 6, confirm: int = 3,
+        smooth: int = 12) -> pd.DataFrame:
     """完整流程：由 G/I 算出動能、原始階段與遲滯後的正式階段。
 
     階段判定在**月頻**上進行，不是日頻。原因是實測出來的：
@@ -97,14 +98,19 @@ def run(G: pd.Series, I: pd.Series, freq: str = "ME",
     """
     g_m = G.resample(freq).last()
     i_m = I.resample(freq).last()
+    if smooth:
+        # 12 個月平滑是實測出來的關鍵參數。未平滑時，階段序列的
+        # 「前進一階」比例僅 21%（隨機基準 20%），等於沒有在繞圈；
+        # 平滑後升至 50%、倒退比例由 40% 降至 20%，
+        # 中位持續 8 個月，與「4.5 年 ÷ 6 階段 ≈ 9 個月」相符。
+        g_m = g_m.rolling(smooth, min_periods=max(smooth // 3, 1)).mean()
+        i_m = i_m.rolling(smooth, min_periods=max(smooth // 3, 1)).mean()
     dg_m = g_m - g_m.shift(momentum_periods)
     raw_m = classify(g_m, dg_m, i_m)
     stage_m = apply_hysteresis(raw_m, confirm=confirm)
 
-    dG = (G.resample(freq).last() - G.resample(freq).last().shift(momentum_periods)
-          ).reindex(G.index, method="ffill")
-    dI = (I.resample(freq).last() - I.resample(freq).last().shift(momentum_periods)
-          ).reindex(I.index, method="ffill")
+    dG = (g_m - g_m.shift(momentum_periods)).reindex(G.index, method="ffill")
+    dI = (i_m - i_m.shift(momentum_periods)).reindex(I.index, method="ffill")
     return pd.DataFrame({
         "G": G, "dG": dG, "I": I, "dI": dI,
         "raw_stage": raw_m.reindex(G.index, method="ffill").fillna(0).astype(int),

@@ -221,6 +221,10 @@ def market_table(panel: pd.DataFrame, spec: list[tuple]) -> str:
                         f"<td class='num muted'>—</td></tr>")
             continue
         s = panel[code].dropna()
+        if s.empty:
+            rows.append(f"<tr><td>{_esc(label)}</td><td class='num muted'>—</td>"
+                        f"<td class='num muted'>無資料</td></tr>")
+            continue
         if len(s) < 64:
             rows.append(f"<tr><td>{_esc(label)}</td>"
                         f"<td class='num'>{s.iloc[-1]:,.2f}</td>"
@@ -369,6 +373,35 @@ th{color:var(--muted);font-weight:600;font-size:12px}
 .warnbox{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--i);
   border-radius:8px;padding:12px 16px;margin-top:14px;font-size:13.5px;color:var(--muted)}
 .warnbox b{color:var(--ink)}
+.outlook{margin-top:4px}
+.ol-dur{font-size:13.5px;color:var(--muted);margin:0 0 14px}
+.ol-dur b{color:var(--ink)}
+.oc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.oc{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--oc);
+  border-radius:10px;padding:13px 15px}
+.oc-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.oc-name{font-weight:700;font-size:14px}
+.oc-pct{font-size:22px;font-weight:700}
+.oc-bar{height:6px;background:var(--bg);border-radius:3px;margin:8px 0 5px;overflow:hidden}
+.oc-bar i{display:block;height:100%;background:var(--oc);border-radius:3px}
+.oc-n{font-size:11.5px;color:var(--muted);margin-bottom:8px}
+.flips{margin:0;padding-left:17px;font-size:12.5px;color:var(--muted)}
+.flips li{margin-bottom:6px}
+.gap{display:block;font-size:11px;opacity:.8;margin-top:1px}
+.flips-ok{margin:0;font-size:12.5px;color:var(--muted)}
+.flips-ok b{color:var(--ink)}
+.am{margin-top:18px;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;padding:14px 16px}
+.am h4{margin:0 0 4px;font-size:13.5px}
+.am-row{display:grid;grid-template-columns:22px 60px 88px 1fr;align-items:center;
+  gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
+.am-row:last-child{border-bottom:none}
+.am-rank{color:var(--muted);font-size:11px}
+.am-name{font-weight:600}
+.am-val{text-align:right;font-variant-numeric:tabular-nums}
+.am-note{color:var(--muted);font-size:11.5px}
+@media(max-width:600px){.am-row{grid-template-columns:20px 54px 1fr;}
+  .am-note{display:none}}
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
   color:var(--muted);font-size:12px;line-height:1.7}
 @media(max-width:760px){
@@ -405,6 +438,13 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
                       f'目前資料只涵蓋約 {span_years:.1f} 年，而一個循環通常要 4–5 年，'
                       '所以看不到全部六個階段是正常的，不代表景氣沒有循環。'
                       '想看完整循環，用 <code>--start 2006-01-01 --years 20</code> 重跑。</div>')
+
+    from . import forecast
+    try:
+        o = forecast.next_stage_outlook(long_df)
+        outlook = outlook_html(o, forecast.asset_momentum(panel))
+    except Exception as e:                      # 推估失敗不應讓整頁掛掉
+        outlook = f'<div class="warnbox">下一階段推估無法產生：{_esc(e)}</div>'
 
     reality = "".join(
         f'<div class="card"><h3>{_esc(t)}</h3>'
@@ -445,6 +485,9 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
 </div>
 {pending}
 {stage_strip(stage)}
+
+<h2>下一階段推估</h2>
+{outlook}
 
 <h2>階段時間軸</h2>
 <div class="card tl-wrap">
@@ -627,3 +670,69 @@ def reality_svg(panel: pd.DataFrame, result: pd.DataFrame, code: str,
                  f'text-anchor="middle">{s.index[i].strftime("%Y-%m")}</text>')
     p.append("</svg>")
     return "".join(p)
+
+
+# ------------------------------------------------------------ 下一階段推估
+def outlook_html(o: dict, assets: list[dict]) -> str:
+    """下一階段推估：歷史基準機率 + 需要什麼條件翻轉才會發生。"""
+    cur, n = o["current"], o["sample_size"]
+    med = o["median_duration"]
+    elapsed = o["elapsed_months"]
+
+    if n == 0:
+        return '<div class="warnbox">歷史樣本不足，無法估計下一階段。</div>'
+
+    dur_txt = (f"已持續 <b>{elapsed}</b> 個月"
+               + (f"，歷史上此階段中位持續 <b>{med:.0f}</b> 個月" if med == med else ""))
+    if med == med and elapsed > med:
+        dur_txt += "　—　已超過中位持續期，轉折風險升高"
+
+    cards = []
+    for c in o["candidates"]:
+        col = sc(c["stage"])
+        pct = c["prob"] * 100
+        if c["flips"]:
+            reasons = "".join(
+                f'<li>{_esc(f["text"])}'
+                f'<span class="gap">目前 {f["current"]:+.2f}，距分界 {f["gap"]:.2f}</span></li>'
+                for f in c["flips"])
+            why = f"<ul class='flips'>{reasons}</ul>"
+        else:
+            why = ('<p class="flips-ok">判定條件<b>已經滿足</b>，'
+                   '正在等待連續確認期 —— 這是最接近換檔的狀態。</p>')
+        cards.append(
+            f'<div class="oc" style="--oc:{col}">'
+            f'  <div class="oc-head">'
+            f'    <span class="oc-name">階段{c["stage"]} {stages.STAGE_NAMES[c["stage"]]}</span>'
+            f'    <span class="oc-pct">{pct:.0f}%</span></div>'
+            f'  <div class="oc-bar"><i style="width:{pct:.0f}%"></i></div>'
+            f'  <div class="oc-n">歷史上 {c["count"]} / {n} 次</div>'
+            f'  {why}</div>')
+
+    rank = "".join(
+        f'<div class="am-row"><span class="am-rank">{i+1}</span>'
+        f'<span class="am-name">{_esc(m["name"])}</span>'
+        f'<span class="am-val {"pos" if m["value"]>=0 else "neg"}">'
+        f'{m["value"]:+.2f}{m["unit"]}</span>'
+        f'<span class="am-note">{_esc(m["note"])}</span></div>'
+        for i, m in enumerate(assets))
+
+    return f"""
+<div class="outlook">
+  <p class="ol-dur">{dur_txt}</p>
+  <div class="oc-grid">{"".join(cards)}</div>
+  <div class="am">
+    <h4>三類資產目前的三個月動能</h4>
+    <p class="sub" style="margin:0 0 8px">
+      投影片三個箭頭的當前讀數。強弱順序就是判斷階段的直覺依據 ——
+      例如原物料領先而債券墊底，對應的是通膨上行、利率承壓的階段。</p>
+    {rank}
+  </div>
+  <div class="warnbox" style="margin-top:14px">
+    <b>這些百分比是歷史基準率，不是模型預測。</b>
+    意思是「過去處在同一階段時，下一段實際走到哪裡」的次數佔比，
+    樣本數 N={n}。N 只有個位數時，該百分比幾乎沒有參考價值。
+    這套模型尚未證明具備預測力（見 <code>validate.py</code>），
+    請把它當作「目前距離各個分界有多遠」的量尺，而不是預測。
+  </div>
+</div>"""

@@ -80,6 +80,9 @@ def render_text(result, g_parts, i_parts, panel) -> str:
             lines.append(f"    {p}   n/a")
             continue
         s = panel[code].dropna()
+        if s.empty:
+            lines.append(f"    {p}        n/a   （無資料）")
+            continue
         if len(s) < 64:
             lines.append(f"    {p} {s.iloc[-1]:>10,.2f}   （歷史不足）")
             continue
@@ -117,6 +120,9 @@ def main() -> int:
     p.add_argument("--csv", help="匯出完整時間序列")
     p.add_argument("--demo", action="store_true", help="用合成資料預覽版面（不連網）")
     p.add_argument("--cache", help="快取檔路徑；抓取失敗時沿用，成功時併入更新")
+    p.add_argument("--profile", choices=["mvp", "full", "econ"],
+                   help="指標組合。econ 使用長歷史經濟指標（1967 起），"
+                        "mvp 使用日頻市場價格（2015 起）")
     p.add_argument("--econ-start", default="1967-01-01",
                    help="econ 長歷史序列的抓取起點（預設 1967，涵蓋約 8 次衰退）")
     p.add_argument("--with-econ", action="store_true",
@@ -124,6 +130,15 @@ def main() -> int:
     p.add_argument("--offline", action="store_true",
                    help="只讀快取、完全不連網（需搭配 --cache）")
     args = p.parse_args()
+
+    if args.profile:
+        cfg.PROFILE = args.profile
+        a = cfg.active()
+        cfg.YAHOO_TICKERS, cfg.FRED_CODES = a["yahoo"], a["fred"]
+        cfg.GROWTH_SPECS, cfg.INFLATION_SPECS = a["growth"], a["inflation"]
+        cfg.DASHBOARD = a["dashboard"]
+        cfg.REALITY_CHECK = a.get("reality", cfg.REALITY_CHECK)
+        print(f"  指標組合：{args.profile}")
 
     if args.demo:
         panel = synthetic_panel()

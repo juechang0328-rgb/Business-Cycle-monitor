@@ -99,8 +99,22 @@ def build_panel(yahoo_tickers: Iterable[str], fred_codes: Iterable[str],
         frames.append(fetch_fred(fred_codes).loc[start:])
     panel = pd.concat(frames, axis=1)
     panel = panel[~panel.index.duplicated(keep="last")].sort_index()
-    idx = pd.bdate_range(panel.index.min(), panel.index.max())
-    return panel.reindex(idx).ffill()
+    return to_business_days(panel)
+
+
+def to_business_days(panel: pd.DataFrame) -> pd.DataFrame:
+    """對齊到營業日並向前填補。
+
+    必須先展開到「每日曆日」再取營業日 —— 不能直接 reindex 到營業日。
+    週頻序列（例如初領失業金 IC4WSA）的日期標在星期六，
+    直接 reindex 到營業日會把整欄資料丟光，且不會報錯，只會靜靜地全變 NaN。
+    """
+    if panel.empty:
+        return panel
+    daily = panel.reindex(
+        pd.date_range(panel.index.min(), panel.index.max(), freq="D")
+    ).ffill()
+    return daily.reindex(pd.bdate_range(panel.index.min(), panel.index.max()))
 
 
 # --------------------------------------------------------------------- 快取
