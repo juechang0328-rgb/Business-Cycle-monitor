@@ -38,9 +38,14 @@ jobs:
           python run.py --html site/index.html --cache data/panel.csv --with-econ
 
       - name: 檢驗模型是否具備訊息量
+        # 這是分析輸出，不該因為分析程式出錯就擋下儀表板
+        continue-on-error: true
         run: python validate.py --cache data/panel.csv
 
       - name: 寫回資料快取
+        # 即使前面步驟失敗也要寫回：抓取本身可能已經成功，
+        # 不該因為下游的程式錯誤就把辛苦抓到的歷史資料丟掉
+        if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

@@ -245,3 +245,34 @@ def test_load_cache_returns_none_when_missing_or_corrupt(tmp_path):
     bad = tmp_path / "bad.csv"
     bad.write_text("這不是 CSV\x00\x00")
     assert load_cache(str(bad)) is None
+
+
+# ------------------------------------------- 不同起始日的序列（迴歸測試）
+def test_classify_aligns_series_with_different_lengths():
+    """成長軸與通膨軸的起始日不同時仍須正常運作。
+
+    迴歸測試：先前 classify 直接 zip 三個序列，zip 會截斷到最短者，
+    但索引用完整長度，導致長度不符而拋 ValueError。
+    當面板同時含市場資料（1998 起）與經濟資料（1967 起）時必然踩到。
+    """
+    long_idx = pd.date_range("2000-01-31", periods=200, freq="ME")
+    short_idx = long_idx[120:]                     # 通膨軸起始較晚
+    G = pd.Series(np.linspace(-1, 1, 200), index=long_idx)
+    dG = G.diff(3)
+    I = pd.Series(np.linspace(-1, 1, 80), index=short_idx)
+
+    out = stages.classify(G, dG, I)
+    assert len(out) == len(long_idx), "應對齊到索引聯集，而非截斷"
+    assert (out.loc[long_idx[:120]] == 0).all(), "通膨軸尚無資料處應判為未定"
+    assert (out.loc[short_idx] > 0).any(), "兩軸都有資料處應產出有效判定"
+
+
+def test_run_handles_axes_with_different_start_dates():
+    idx = pd.bdate_range("2000-01-03", periods=3000)
+    rng = np.random.default_rng(3)
+    G = pd.Series(np.cumsum(rng.normal(0, 0.05, 3000)), index=idx)
+    I = pd.Series(np.cumsum(rng.normal(0, 0.05, 3000)), index=idx)
+    I.iloc[:1500] = np.nan                          # 通膨軸前半段沒有資料
+    out = stages.run(G, I)                          # 不可拋錯
+    assert len(out) == len(idx)
+    assert (out["stage"].iloc[2000:] > 0).any()

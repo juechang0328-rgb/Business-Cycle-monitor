@@ -43,10 +43,17 @@ def classify_point(g: float, dg: float, i: float) -> int:
 
 
 def classify(G: pd.Series, dG: pd.Series, I: pd.Series) -> pd.Series:
-    """逐日的原始判定（未加遲滯）。"""
+    """逐日的原始判定（未加遲滯）。
+
+    三個序列先對齊到索引聯集再判定。不可直接 zip —— zip 會截斷到最短的
+    序列，但索引用的是完整長度，兩者長度不一致時會直接拋錯。
+    成長軸與通膨軸的成分起始日往往不同（例如市場 ETF 1998 年才有，
+    而經濟序列可回溯到 1960 年代），對齊是必要的。
+    """
+    aligned = pd.concat([G, dG, I], axis=1, keys=["g", "dg", "i"])
     return pd.Series(
-        [classify_point(g, dg, i) for g, dg, i in zip(G, dG, I)],
-        index=G.index, name="raw_stage",
+        [classify_point(r.g, r.dg, r.i) for r in aligned.itertuples()],
+        index=aligned.index, name="raw_stage",
     )
 
 
@@ -88,8 +95,8 @@ def run(G: pd.Series, I: pd.Series, freq: str = "ME",
 
     G/I 仍以日頻回傳供圖表使用；階段以月頻判定後再展開回日頻。
     """
-    g_m = G.resample(freq).last().dropna()
-    i_m = I.resample(freq).last().dropna()
+    g_m = G.resample(freq).last()
+    i_m = I.resample(freq).last()
     dg_m = g_m - g_m.shift(momentum_periods)
     raw_m = classify(g_m, dg_m, i_m)
     stage_m = apply_hysteresis(raw_m, confirm=confirm)
