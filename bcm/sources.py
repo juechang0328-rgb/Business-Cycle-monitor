@@ -101,3 +101,35 @@ def build_panel(yahoo_tickers: Iterable[str], fred_codes: Iterable[str],
     panel = panel[~panel.index.duplicated(keep="last")].sort_index()
     idx = pd.bdate_range(panel.index.min(), panel.index.max())
     return panel.reindex(idx).ffill()
+
+
+# --------------------------------------------------------------------- 快取
+def load_cache(path: str) -> pd.DataFrame | None:
+    """讀取先前存下的面板；不存在或毀損時回傳 None。"""
+    import os
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path, index_col=0, parse_dates=True)
+        return df.sort_index() if len(df) else None
+    except Exception:
+        return None
+
+
+def save_cache(panel: pd.DataFrame, path: str) -> None:
+    import os
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    panel.to_csv(path)
+
+
+def merge_panel(old: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
+    """把新抓的資料併入舊快取：欄與列取聯集，重疊處以新資料為準。
+
+    目的是讓排程即使某天抓取失敗或缺了幾檔，歷史也不會斷掉。
+    """
+    if old is None or old.empty:
+        return new
+    merged = new.combine_first(old)
+    return merged.reindex(columns=sorted(set(old.columns) | set(new.columns))).sort_index()

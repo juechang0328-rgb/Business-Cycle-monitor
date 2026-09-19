@@ -22,7 +22,7 @@ import pandas as pd
 from bcm import dashboard
 from bcm import indicators as cfg
 from bcm import scoring, stages
-from bcm.sources import build_panel
+from bcm.sources import build_panel, load_cache, merge_panel, save_cache
 
 
 def _width(text: str) -> int:
@@ -115,18 +115,29 @@ def main() -> int:
                    help="產生 HTML 儀表板")
     p.add_argument("--csv", help="匯出完整時間序列")
     p.add_argument("--demo", action="store_true", help="用合成資料預覽版面（不連網）")
+    p.add_argument("--cache", help="快取檔路徑；抓取失敗時沿用，成功時併入更新")
     args = p.parse_args()
 
     if args.demo:
         panel = synthetic_panel()
     else:
+        cached = load_cache(args.cache) if args.cache else None
         try:
-            panel = build_panel(cfg.YAHOO_TICKERS, cfg.FRED_CODES, start=args.start)
+            fresh = build_panel(cfg.YAHOO_TICKERS, cfg.FRED_CODES, start=args.start)
+            panel = merge_panel(cached, fresh)
+            if args.cache:
+                save_cache(panel, args.cache)
+                print(f"  快取已更新：{args.cache}（{len(panel)} 筆）")
         except Exception as e:
-            print(f"資料抓取失敗：{e}", file=sys.stderr)
-            print("請確認可連到 finance.yahoo.com 與 fred.stlouisfed.org。"
-                  "要先看版面可加 --demo。", file=sys.stderr)
-            return 1
+            if cached is None:
+                print(f"資料抓取失敗：{e}", file=sys.stderr)
+                print("請確認可連到 finance.yahoo.com 與 fred.stlouisfed.org。"
+                      "要先看版面可加 --demo。", file=sys.stderr)
+                return 1
+            stale = (pd.Timestamp.today().normalize() - cached.index[-1]).days
+            print(f"⚠ 抓取失敗（{e}），改用快取資料，最後更新於 "
+                  f"{cached.index[-1].date()}（{stale} 天前）", file=sys.stderr)
+            panel = cached
 
     result, g_parts, i_parts = compute(panel, confirm=args.confirm)
     print(render_text(result, g_parts, i_parts, panel))

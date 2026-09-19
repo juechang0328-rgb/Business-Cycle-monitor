@@ -172,3 +172,49 @@ def test_all_six_stages_have_colour_and_description():
     for s in range(1, 7):
         assert s in dashboard.STAGE_COLORS
         assert dashboard.STAGE_DESC[s].strip()
+
+
+# ------------------------------------------------------------------ 資料快取
+def test_merge_panel_new_data_wins_on_overlap():
+    from bcm.sources import merge_panel
+    idx = pd.date_range("2026-01-01", periods=3)
+    old = pd.DataFrame({"A": [1.0, 2.0, 3.0]}, index=idx)
+    new = pd.DataFrame({"A": [9.0]}, index=idx[-1:])
+    out = merge_panel(old, new)
+    assert out.loc[idx[0], "A"] == 1.0
+    assert out.loc[idx[-1], "A"] == 9.0, "重疊處應以新資料為準"
+
+
+def test_merge_panel_extends_history_and_columns():
+    from bcm.sources import merge_panel
+    old = pd.DataFrame({"A": [1.0, 2.0]}, index=pd.date_range("2026-01-01", periods=2))
+    new = pd.DataFrame({"A": [3.0], "B": [7.0]}, index=pd.date_range("2026-01-03", periods=1))
+    out = merge_panel(old, new)
+    assert list(out.columns) == ["A", "B"]
+    assert len(out) == 3, "歷史應延長而非被覆蓋"
+    assert out["A"].tolist() == [1.0, 2.0, 3.0]
+
+
+def test_merge_panel_handles_empty_cache():
+    from bcm.sources import merge_panel
+    new = pd.DataFrame({"A": [1.0]}, index=pd.date_range("2026-01-01", periods=1))
+    assert merge_panel(None, new).equals(new)
+    assert merge_panel(pd.DataFrame(), new).equals(new)
+
+
+def test_cache_roundtrip(tmp_path):
+    from bcm.sources import load_cache, save_cache
+    path = str(tmp_path / "sub" / "panel.csv")
+    df = pd.DataFrame({"A": [1.0, 2.0]}, index=pd.date_range("2026-01-01", periods=2))
+    save_cache(df, path)                       # 應自動建立目錄
+    back = load_cache(path)
+    assert back is not None
+    assert back["A"].tolist() == [1.0, 2.0]
+
+
+def test_load_cache_returns_none_when_missing_or_corrupt(tmp_path):
+    from bcm.sources import load_cache
+    assert load_cache(str(tmp_path / "nope.csv")) is None
+    bad = tmp_path / "bad.csv"
+    bad.write_text("這不是 CSV\x00\x00")
+    assert load_cache(str(bad)) is None

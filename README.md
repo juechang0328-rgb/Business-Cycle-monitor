@@ -2,7 +2,24 @@
 
 以**日頻、免費、免 API key** 的市場資料定位景氣循環六階段，並產生可隨時開啟的 HTML 儀表板。
 
-## 快速開始
+## 用法一：GitHub Actions 自動更新（推薦，不必在本機跑）
+
+每個交易日收盤後自動抓資料、重算階段、把儀表板發佈成網頁。
+設定完成後你只要開同一個網址就能隨時看最新狀態。
+
+**一次性設定**（在 GitHub 網頁上操作）：
+
+1. 進 repo → **Settings** → **Pages** → Source 選 **GitHub Actions**
+2. 進 **Actions** 分頁，若提示啟用工作流程就按啟用
+3. 進 **Actions** → 選「景氣循環儀表板」→ **Run workflow** 手動跑第一次
+
+跑完後網址是 `https://<你的帳號>.github.io/Business-Cycle-monitor/`。
+之後每週一至週五 22:00 UTC（美股收盤後約兩小時）自動更新。
+
+排程定義在 [`.github/workflows/dashboard.yml`](.github/workflows/dashboard.yml)，
+要改時間就改裡面的 `cron`。
+
+## 用法二：在本機跑
 
 ```bash
 pip install -r requirements.txt
@@ -16,6 +33,18 @@ open dashboard.html           # macOS（Windows 用 start、Linux 用 xdg-open�
 ```bash
 python run.py --demo --html   # 用合成資料預覽（頁面會標示為示範資料）
 ```
+
+## 資料快取
+
+加上 `--cache` 會把抓到的資料存成 `data/panel.csv`，下次執行時併入更新：
+
+```bash
+python run.py --html --cache data/panel.csv
+```
+
+好處是**抓取失敗那天不會開天窗** —— 程式會沿用快取並在畫面上標示資料已過期幾天。
+排程工作流程預設就有開快取，並把 `data/panel.csv` 寫回 repo，
+所以歷史會一天天累積起來，不依賴單次抓取成功。
 
 ## 儀表板內容
 
@@ -78,14 +107,16 @@ python run.py --csv out.csv      # 匯出完整時間序列
 ## 專案結構
 
 ```
+.github/workflows/
+  dashboard.yml   每日排程：抓資料 → 跑測試 → 產生儀表板 → 發佈 GitHub Pages
 bcm/
-  sources.py      資料抓取（yfinance + FRED，含重試與單位正規化）
+  sources.py      資料抓取（yfinance + FRED，含重試、快取合併與單位正規化）
   indicators.py   指標設定：ticker、軸別、權重  ← 要調整就改這裡
   scoring.py      動能 → z-score → 加權合成（純函數）
   stages.py       六階段判定與遲滯（純函數）
   dashboard.py    HTML 儀表板（手刻 SVG，無外部相依）
 run.py            CLI
-tests/            17 項測試，含合成完整循環的端到端驗證
+tests/            22 項測試，含合成完整循環的端到端驗證
 ```
 
 ## 文件
@@ -103,3 +134,6 @@ tests/            17 項測試，含合成完整循環的端到端驗證
   （週頻、FRED `IC4WSA`）CP 值最高。
 - 權重是先驗設定，**未經回測最佳化**。
 - 期貨為連續合約，轉倉時有跳空；影響已由三個月動能取 z-score 稀釋。
+- Yahoo 偶爾會對資料中心 IP（包含 GitHub Actions runner）限流，
+  排程可能某天抓不到。快取機制就是為此設計的 —— 那天會沿用前一日資料並標示過期，
+  不會讓歷史斷掉。FRED 沒有這個問題。
