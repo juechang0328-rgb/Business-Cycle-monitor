@@ -132,3 +132,43 @@ def test_full_cycle_visits_every_stage_in_order():
     transitions = {(a, b) for a, b in zip(wrapped, wrapped[1:])}
     legal = {(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 1)}
     assert transitions <= legal, f"出現非法跳階：{transitions - legal}"
+
+
+# ------------------------------------------------------------------ 儀表板
+def test_dashboard_renders_valid_page():
+    """以合成面板確認 HTML 產得出來、關鍵區塊都在。"""
+    import run
+    from bcm import dashboard, indicators as cfg
+
+    panel = run.synthetic_panel()
+    result, gp, ip = run.compute(panel, confirm=10)
+    cutoff = result.index[-1] - pd.DateOffset(years=3)
+    view = result.loc[result.index >= cutoff]
+    html = dashboard.render_html(view, gp.loc[gp.index >= cutoff],
+                                 ip.loc[ip.index >= cutoff], panel, cfg, demo=True)
+
+    assert html.startswith("<!DOCTYPE html>") and html.rstrip().endswith("</html>")
+    assert "<svg" in html and html.count("<svg") == 2      # 時鐘 + 走勢圖
+    assert "景氣循環監測" in html
+    assert "示範資料" in html or "示範頁面" in html         # demo 標記必須出現
+    stage = int(view.dropna(subset=["G", "I"]).iloc[-1]["stage"])
+    assert f"階段 {stage}" in html
+    for name in [s["name"] for s in cfg.GROWTH_SPECS]:
+        assert name in html
+
+
+def test_dashboard_marks_demo_only_when_asked():
+    import run
+    from bcm import dashboard, indicators as cfg
+
+    panel = run.synthetic_panel()
+    result, gp, ip = run.compute(panel, confirm=10)
+    html = dashboard.render_html(result, gp, ip, panel, cfg, demo=False)
+    assert "示範頁面" not in html
+
+
+def test_all_six_stages_have_colour_and_description():
+    from bcm import dashboard
+    for s in range(1, 7):
+        assert s in dashboard.STAGE_COLORS
+        assert dashboard.STAGE_DESC[s].strip()
