@@ -19,7 +19,7 @@ import unicodedata
 
 import pandas as pd
 
-from bcm import dashboard
+from bcm import dashboard, derived, macro_dash
 from bcm import indicators as cfg
 from bcm import scoring, stages
 from bcm.sources import build_panel, load_cache, merge_panel, save_cache
@@ -120,13 +120,17 @@ def main() -> int:
     p.add_argument("--csv", help="匯出完整時間序列")
     p.add_argument("--demo", action="store_true", help="用合成資料預覽版面（不連網）")
     p.add_argument("--cache", help="快取檔路徑；抓取失敗時沿用，成功時併入更新")
-    p.add_argument("--profile", choices=["mvp", "full", "econ"],
+    p.add_argument("--macro", nargs="?", const="macro.html", default=None,
+                   help="產生總經儀表板（五大區塊＋資料健康檢查）")
+    p.add_argument("--profile", choices=["mvp", "full", "econ", "macro"],
                    help="指標組合。econ 使用長歷史經濟指標（1967 起），"
                         "mvp 使用日頻市場價格（2015 起）")
     p.add_argument("--econ-start", default="1967-01-01",
                    help="econ 長歷史序列的抓取起點（預設 1967，涵蓋約 8 次衰退）")
     p.add_argument("--with-econ", action="store_true",
                    help="一併抓取 econ 組合的長歷史經濟序列（存入同一份快取供檢驗用）")
+    p.add_argument("--with-macro", action="store_true",
+                   help="一併抓取總經儀表板所需序列（流動性、通膨、情緒）")
     p.add_argument("--offline", action="store_true",
                    help="只讀快取、完全不連網（需搭配 --cache）")
     args = p.parse_args()
@@ -153,15 +157,22 @@ def main() -> int:
         try:
             fresh = build_panel(cfg.YAHOO_TICKERS, cfg.FRED_CODES, start=args.start)
             panel = merge_panel(cached, fresh)
+            # 額外序列各自獨立抓取：起點不同，且任一組失敗都不應
+            # 影響已經成功取得的主資料
+            extras = []
             if args.with_econ:
-                # 長歷史經濟序列獨立抓取：它的起點遠早於市場 ETF，
-                # 且抓取失敗不應影響每日儀表板
+                extras.append(("econ", cfg.ECON_FRED, [], args.econ_start))
+            if args.with_macro:
+                extras.append(("macro", cfg.MACRO_FRED, cfg.MACRO_YAHOO,
+                               args.econ_start))
+            for label, fred_codes, yh, start in extras:
                 try:
-                    econ = build_panel([], cfg.ECON_FRED, start=args.econ_start)
-                    panel = merge_panel(panel, econ)
-                    print(f"  已併入 econ 長歷史序列（起自 {econ.index[0].date()}）")
+                    extra = build_panel(yh, fred_codes, start=start)
+                    panel = merge_panel(panel, extra)
+                    print(f"  已併入 {label} 序列（起自 {extra.index[0].date()}，"
+                          f"{len(extra.columns)} 欄）")
                 except Exception as ee:
-                    print(f"⚠ econ 序列抓取失敗（{ee}），主資料不受影響",
+                    print(f"⚠ {label} 序列抓取失敗（{ee}），主資料不受影響",
                           file=sys.stderr)
             if args.cache:
                 save_cache(panel, args.cache)
@@ -176,6 +187,20 @@ def main() -> int:
             print(f"⚠ 抓取失敗（{e}），改用快取資料，最後更新於 "
                   f"{cached.index[-1].date()}（{stale} 天前）", file=sys.stderr)
             panel = cached
+
+    # 衍生序列（淨流動性、銅金比、Sahm 缺口）：單位換算集中在 bcm/derived.py
+    panel, skipped = derived.add_derived(panel)
+    if skipped:
+        for k, v in skipped.items():
+            print(f"  ⚠ 衍生指標 {k} 無法計算：缺少 {'、'.join(v)}", file=sys.stderr)
+
+    if args.macro:
+        html_macro = macro_dash.render(panel, cfg, skipped=skipped, demo=args.demo)
+        with open(args.macro, "w", encoding="utf-8") as f:
+            f.write(html_macro)
+        print(f"  總經儀表板已輸出：{args.macro}")
+        if not args.html and not args.csv:
+            return 0
 
     result, g_parts, i_parts = compute(panel, confirm=args.confirm)
     print(render_text(result, g_parts, i_parts, panel))

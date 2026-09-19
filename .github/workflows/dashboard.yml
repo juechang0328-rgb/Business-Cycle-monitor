@@ -35,7 +35,10 @@ jobs:
       - name: 抓取資料並產生儀表板
         run: |
           mkdir -p site
-          python run.py --html site/index.html --cache data/panel.csv --with-econ
+          python run.py --html site/index.html --cache data/panel.csv \
+            --with-econ --with-macro
+          python run.py --offline --cache data/panel.csv --profile macro \
+            --macro site/macro.html
 
       - name: 檢驗模型是否具備訊息量
         # 這是分析輸出，不該因為分析程式出錯就擋下儀表板

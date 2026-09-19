@@ -102,6 +102,12 @@ FULL_DASHBOARD = MVP_DASHBOARD + [
 
 # ------------------------------------------------------------------ 選用設定
 def active() -> dict:
+    if PROFILE == "macro":
+        return {"yahoo": MACRO_YAHOO, "fred": MACRO_FRED,
+                "growth": ECON_GROWTH, "inflation": ECON_INFLATION,
+                "dashboard": ECON_DASHBOARD, "reality": ECON_REALITY,
+                "groups": MACRO_GROUPS, "health": MACRO_HEALTH,
+                "unavailable": MACRO_UNAVAILABLE}
     if PROFILE == "econ":
         return {"yahoo": [], "fred": ECON_FRED, "growth": ECON_GROWTH,
                 "inflation": ECON_INFLATION, "dashboard": ECON_DASHBOARD,
@@ -173,4 +179,107 @@ ECON_REALITY = [
      "景氣本身。模型若有效，G 轉折應領先這條線數個月。", True),
     ("失業率", "UNRATE", "level",
      "落後指標，用來事後確認衰退是否真的發生。", False),
+]
+
+
+# =================================================================== MACRO
+# 總經儀表板：以描述「現在市場在發生什麼」為目的，不宣稱預測。
+# 涵蓋景氣動能、通膨利率、央行流動性、金融壓力、市場情緒五塊。
+
+MACRO_FRED = [
+    # 景氣動能
+    "PAYEMS", "UNRATE", "SAHMREALTIME", "INDPRO", "IC4WSA", "PERMIT",
+    # 通膨與利率
+    "PCEPILFE", "CPILFESL", "DFII10", "DGS10", "DGS2", "T10YIE",
+    # 央行流動性（單位不一致，見 bcm/derived.py）
+    "WALCL", "WTREGEN", "RRPONTSYD", "DTWEXBGS",
+    # 金融壓力
+    "T10Y2Y", "T10Y3M", "BAMLH0A0HYM2", "NFCI",
+]
+
+MACRO_YAHOO = ["HG=F", "GC=F", "CL=F", "^VIX", "^GSPC"]
+
+# 明確記錄「想要但拿不到」的序列 —— 不是遺漏，是已知限制。
+# 沒有這份清單，抓不到的指標會變成靜默的缺口。
+MACRO_UNAVAILABLE = [
+    {"name": "ISM 製造業 PMI（新訂單−客戶存貨）", "symbol": "NAPM",
+     "reason": "FRED 於 2016-06-24 應 ISM 要求移除全部 22 個 ISM 序列（授權問題）",
+     "workaround": "ISM 官網僅提供當期；歷史需 DBnomics、investing.com 或付費源"},
+    {"name": "MOVE 債券波動率指數", "symbol": "MOVE",
+     "reason": "ICE BofA 專有資料，無免費 API",
+     "workaround": "需 Bloomberg／Refinitiv 訂閱，或改用 ^TYX 波動度粗略替代"},
+    {"name": "花旗經濟驚奇指數 CESI", "symbol": "CESIUSD",
+     "reason": "Citigroup 專有資料，無免費 API",
+     "workaround": "需 Bloomberg 或財經 M 平方訂閱"},
+]
+
+# 健康檢查用：(顯示名稱, 欄位代碼, 頻率)
+MACRO_HEALTH = [
+    ("非農就業",        "PAYEMS",       "monthly"),
+    ("失業率",          "UNRATE",       "monthly"),
+    ("Sahm Rule",       "SAHMREALTIME", "monthly"),
+    ("工業生產",        "INDPRO",       "monthly"),
+    ("初領失業金4週均",  "IC4WSA",       "weekly"),
+    ("建照核發",        "PERMIT",       "monthly"),
+    ("核心PCE",         "PCEPILFE",     "monthly"),
+    ("核心CPI",         "CPILFESL",     "monthly"),
+    ("10年實質利率",    "DFII10",       "daily"),
+    ("10年期殖利率",    "DGS10",        "daily"),
+    ("2年期殖利率",     "DGS2",         "daily"),
+    ("通膨預期10Y",     "T10YIE",       "daily"),
+    ("Fed 總資產",      "WALCL",        "weekly"),
+    ("財政部TGA",       "WTREGEN",      "weekly"),
+    ("隔夜逆回購",      "RRPONTSYD",    "daily"),
+    ("美元指數",        "DTWEXBGS",     "daily"),
+    ("10Y-2Y 利差",     "T10Y2Y",       "daily"),
+    ("10Y-3M 利差",     "T10Y3M",       "daily"),
+    ("高收益債利差",    "BAMLH0A0HYM2", "daily"),
+    ("金融條件NFCI",    "NFCI",         "weekly"),
+    ("銅",              "HG=F",         "daily"),
+    ("黃金",            "GC=F",         "daily"),
+    ("原油",            "CL=F",         "daily"),
+    ("VIX",             "^VIX",         "daily"),
+    ("標普500",         "^GSPC",        "daily"),
+]
+
+# 儀表板分組：(區塊標題, [(顯示名稱, 代碼, 呈現方式, 門檻或說明)])
+# mode：pct=百分比變化、diff=絕對差、level=水準值
+MACRO_GROUPS = [
+    ("景氣動能", [
+        ("工業生產年增", "INDPRO",       "yoy",   None),
+        ("非農就業3月年化", "PAYEMS",    "m3ann", None),
+        ("初領失業金4週均", "IC4WSA",    "level", None),
+        ("Sahm Rule",    "SAHMREALTIME", "level", {"warn": 0.50}),
+        ("建照核發年增",  "PERMIT",      "yoy",   None),
+        ("銅金比",       "COPPER_GOLD",  "level", None),
+    ]),
+    ("通膨與利率", [
+        ("核心PCE年增",  "PCEPILFE",     "yoy",   {"target": 2.0}),
+        ("核心CPI年增",  "CPILFESL",     "yoy",   {"target": 2.0}),
+        ("10年實質利率", "DFII10",       "level", None),
+        ("通膨預期10Y",  "T10YIE",       "level", None),
+        ("10年期殖利率", "DGS10",        "level", None),
+        ("2年期殖利率",  "DGS2",         "level", None),
+    ]),
+    ("央行流動性", [
+        ("Fed 淨流動性", "NET_LIQ",      "level", None),
+        ("Fed 總資產",   "WALCL",        "level", None),
+        ("財政部TGA",    "WTREGEN",      "level", None),
+        ("隔夜逆回購",   "RRPONTSYD",    "level", None),
+        ("美元指數",     "DTWEXBGS",     "level", None),
+    ]),
+    ("金融壓力", [
+        ("10Y-2Y 利差",  "T10Y2Y",       "level", {"invert_zone": 0.0}),
+        ("10Y-3M 利差",  "T10Y3M",       "level", {"invert_zone": 0.0}),
+        # FRED BAMLH0A0HYM2 的單位是「百分點」（3.20 = 320bp），
+        # 門檻必須同單位。先前誤用基點數值，導致任何值都判為「極度冒險」。
+        ("高收益債利差", "BAMLH0A0HYM2", "level",
+         {"calm": 3.00, "normal": 4.50, "stress": 5.00, "unit": "pp"}),
+        ("金融條件NFCI", "NFCI",         "level", {"tight": 0.0}),
+    ]),
+    ("市場情緒", [
+        ("VIX",          "^VIX",         "level", {"calm": 15, "stress": 25}),
+        ("標普500",      "^GSPC",        "pct",   None),
+        ("原油",         "CL=F",         "pct",   None),
+    ]),
 ]

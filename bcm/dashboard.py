@@ -299,6 +299,9 @@ body{margin:0;background:var(--bg);color:var(--ink);
   font:15px/1.6 -apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;}
 .wrap{max-width:1040px;margin:0 auto;padding:28px 16px 60px}
 h1{font-size:23px;margin:0 0 2px;letter-spacing:.3px}
+.topnav{margin:-2px 0 8px}
+.topnav a{color:var(--g);text-decoration:none;font-size:13px}
+.topnav a:hover{text-decoration:underline}
 h2{font-size:15px;margin:30px 0 12px;color:var(--muted);font-weight:600;
   text-transform:none;letter-spacing:.5px}
 .sub{color:var(--muted);font-size:13px;margin:0 0 22px}
@@ -463,6 +466,7 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
 <style>{CSS}</style></head><body><div class="wrap">
 
 <h1>景氣循環監測</h1>
+<nav class="topnav"><a href="macro.html">總經儀表板 →</a></nav>
 <p class="sub">資料日期 {date}　·　產生時間 {datetime.now():%Y-%m-%d %H:%M}　·　
 近 {(d.index[-1]-d.index[0]).days // 365} 年軌跡</p>
 {demo_banner}

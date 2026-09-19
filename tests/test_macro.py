@@ -1,0 +1,163 @@
+"""總經儀表板與資料健康檢查的測試。
+
+重點放在單位換算 —— 這是本專案已經踩過兩次的地雷：
+一次是 RRPONTSYD（十億 vs 百萬），一次是高收益債利差門檻（基點 vs 百分點）。
+兩者都不會拋錯，只會安靜地算出錯的數字。
+"""
+import numpy as np
+import pandas as pd
+import pytest
+
+from bcm import derived, health, macro_dash
+
+
+# ------------------------------------------------------------ 單位換算
+def test_net_liquidity_converts_rrp_from_billions_to_millions():
+    """RRPONTSYD 以十億美元計，WALCL/WTREGEN 以百萬美元計，必須 ×1000。"""
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    panel = pd.DataFrame({
+        "WALCL":     [7_000_000.0] * 5,   # 百萬 → 7 兆
+        "WTREGEN":   [500_000.0] * 5,     # 百萬 → 0.5 兆
+        "RRPONTSYD": [200.0] * 5,         # 十億 → 0.2 兆
+    }, index=idx)
+    out, skipped = derived.add_derived(panel)
+    assert not skipped.get("NET_LIQ")
+    # 7兆 − 0.5兆 − 0.2兆 = 6.3兆 = 6,300,000 百萬
+    assert out["NET_LIQ"].iloc[-1] == pytest.approx(6_300_000.0)
+    # 若忘了換算會得到 6,499,800 —— 明確排除這個錯誤值
+    assert out["NET_LIQ"].iloc[-1] != pytest.approx(7_000_000 - 500_000 - 200)
+
+
+def test_hy_oas_thresholds_are_in_percent_not_basis_points():
+    """FRED BAMLH0A0HYM2 單位是百分點。門檻若誤用基點，任何值都會判成極窄。"""
+    import bcm.indicators as cfg
+    cfg.PROFILE = "macro"
+    groups = cfg.active()["groups"]
+    th = next(item[3] for _, items in groups for item in items
+              if item[1] == "BAMLH0A0HYM2")
+    assert th["calm"] < 10 and th["stress"] < 10, "門檻應為百分點量級（約 3~5）"
+
+    # 320bp = 3.20% 應判為常態，而非極窄
+    assert macro_dash.threshold_note("BAMLH0A0HYM2", 3.20, th)[0] == "常態區間"
+    assert macro_dash.threshold_note("BAMLH0A0HYM2", 2.50, th)[0] == "利差極窄"
+    assert macro_dash.threshold_note("BAMLH0A0HYM2", 6.00, th)[1] == "alert"
+
+
+def test_sahm_gap_uses_min_of_moving_average():
+    """Sahm 缺口減的是「3MMA 的前 12 個月最低值」，不是原始失業率的最低值。"""
+    idx = pd.date_range("2024-01-31", periods=30, freq="ME")
+    # 中間插入單月低點：原始最低值會被它拉低，3MMA 的最低值不會
+    u = np.full(30, 4.0)
+    u[10] = 3.0
+    u[-3:] = [4.6, 4.8, 5.0]
+    out, _ = derived.add_derived(pd.DataFrame({"UNRATE": u}, index=idx))
+    gap = out["SAHM_GAP"].dropna()
+    mma = pd.Series(u, index=idx).rolling(3).mean()
+    expected = mma.iloc[-1] - mma.rolling(12).min().iloc[-1]
+    assert gap.iloc[-1] == pytest.approx(expected)
+    # 用原始最低值會算出更大的缺口 —— 確認沒有算成那個
+    assert gap.iloc[-1] != pytest.approx(mma.iloc[-1] - u.min())
+
+
+def test_derived_reports_missing_inputs_instead_of_silently_skipping():
+    idx = pd.bdate_range("2026-01-01", periods=3)
+    panel = pd.DataFrame({"WALCL": [1.0, 2.0, 3.0]}, index=idx)
+    out, skipped = derived.add_derived(panel)
+    assert "NET_LIQ" not in out.columns
+    assert set(skipped["NET_LIQ"]) == {"WTREGEN", "RRPONTSYD"}
+
+
+# ------------------------------------------------------------ 健康檢查
+def test_health_flags_all_nan_column():
+    """迴歸測試：IC4WSA 曾因對齊營業日而整欄變 NaN，卻沒有任何警示。"""
+    idx = pd.bdate_range("2026-08-01", periods=30)
+    panel = pd.DataFrame({"A": np.arange(30.0), "B": np.nan}, index=idx)
+    h = health.check_panel(panel, [("甲", "A", "daily"), ("乙", "B", "daily")])
+    assert h.set_index("代碼").loc["B", "status"] == "無資料"
+    assert h.set_index("代碼").loc["A", "status"] == "正常"
+    assert h.iloc[0]["代碼"] == "B", "異常項目應排在最前面"
+
+
+def test_health_detects_stale_and_delayed():
+    idx = pd.bdate_range("2026-01-01", periods=200)
+    panel = pd.DataFrame({"D": np.arange(200.0)}, index=idx)
+    panel.loc[idx[-20:], "D"] = np.nan          # 日頻卻 20 個營業日沒更新
+    h = health.check_panel(panel, [("日頻", "D", "daily")], asof=idx[-1])
+    assert h.iloc[0]["status"] in ("延遲", "停更")
+
+    panel2 = panel.copy()
+    panel2["D"] = np.arange(200.0)
+    h2 = health.check_panel(panel2, [("日頻", "D", "daily")], asof=idx[-1])
+    assert h2.iloc[0]["status"] == "正常"
+
+
+def test_health_missing_column_is_reported():
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    h = health.check_panel(pd.DataFrame({"A": range(5)}, index=idx),
+                           [("不存在", "ZZZ", "daily")])
+    assert h.iloc[0]["status"] == "無資料"
+    assert h.iloc[0]["n"] == 0
+
+
+def test_health_summary_counts():
+    idx = pd.bdate_range("2026-01-01", periods=10)
+    panel = pd.DataFrame({"A": np.arange(10.0), "B": np.nan}, index=idx)
+    h = health.check_panel(panel, [("甲", "A", "daily"), ("乙", "B", "daily")])
+    s = health.summarise(h)
+    assert s["total"] == 2 and s["ok"] == 1 and s["missing"] == 1
+    assert not s["healthy"]
+
+
+# ------------------------------------------------------------ 呈現邏輯
+def test_yoy_uses_calendar_year_not_fixed_row_count():
+    idx = pd.bdate_range("2024-01-01", periods=700)
+    s = pd.Series(np.linspace(100, 200, 700), index=idx)
+    panel = pd.DataFrame({"X": s})
+    yoy = macro_dash.metric_series(panel, "X", "yoy")
+    # 以日曆年對齊：最後一點應約等於「相對一年前」的變化
+    prev = s.reindex([idx[-1] - pd.DateOffset(years=1)], method="ffill").iloc[0]
+    assert yoy.iloc[-1] == pytest.approx((s.iloc[-1] / prev - 1) * 100, rel=1e-6)
+
+
+def test_rate_mode_change_is_labelled_as_percentage_points():
+    """比率型指標的主值已是百分比，其變化必須標成 pp，否則同卡出現兩個矛盾的 %。"""
+    assert macro_dash.CHANGE_UNIT["pct"] == "pp"
+    assert macro_dash.CHANGE_UNIT["yoy"] == "pp"
+    assert macro_dash.CHANGE_UNIT["level"] == ""
+    assert macro_dash.CHANGE_LABEL["pct"] != macro_dash.CHANGE_LABEL["level"]
+
+
+def test_far_threshold_does_not_flatten_sparkline():
+    """遠離資料的門檻不得納入座標範圍，否則真實波動被壓成平線。"""
+    idx = pd.bdate_range("2026-01-01", periods=120)
+    s = pd.Series(np.linspace(-1.2, -0.8, 120), index=idx)
+    far = macro_dash.sparkline(s, thresholds={"far": 500.0})
+    assert "spark-th" not in far, "500 遠離資料，不該撐開座標軸"
+
+    near = macro_dash.sparkline(s, thresholds={"calm": -1.0})
+    assert "spark-th" in near, "門檻落在資料範圍內，應該畫出來"
+
+
+def test_inversion_zero_line_always_shown():
+    """倒掛指標的零軸是語意本身：整條線都在負值區時更需要看見它。"""
+    idx = pd.bdate_range("2026-01-01", periods=120)
+    s = pd.Series(np.linspace(-1.2, -0.8, 120), index=idx)
+    out = macro_dash.sparkline(s, thresholds={"invert_zone": 0.0})
+    assert "spark-th" in out, "invert_zone 不受距離限制，必須畫出零軸"
+
+
+def test_missing_series_renders_placeholder_card():
+    idx = pd.bdate_range("2026-01-01", periods=10)
+    panel = pd.DataFrame({"A": np.arange(10.0)}, index=idx)
+    card = macro_dash.metric_card(panel, "不存在", "ZZZ", "level", None)
+    assert "mcard missing" in card and "無資料" in card
+
+
+def test_arrow_matches_displayed_value():
+    """顯示 +0.00 時不該配 ▲ —— 方向要依四捨五入後的顯示值判斷。"""
+    idx = pd.bdate_range("2026-01-01", periods=200)
+    s = pd.Series(5.0, index=idx)
+    s.iloc[-1] = 5.001                       # 變化小到顯示為 +0.00
+    card = macro_dash.metric_card(pd.DataFrame({"X": s}), "測試", "X", "level", None)
+    assert "+0.00" in card
+    assert "▲" not in card and "▼" not in card
