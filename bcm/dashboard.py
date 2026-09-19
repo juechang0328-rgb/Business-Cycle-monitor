@@ -55,10 +55,11 @@ def _nice_bounds(lo: float, hi: float, pad: float = 0.12) -> tuple[float, float]
 
 
 def clock_svg(df: pd.DataFrame, w: int = 560, h: int = 460,
-              resample: str = "W-FRI") -> str:
+              resample: str = "ME") -> str:
     """景氣時鐘：x=通膨分數 I，y=成長分數 G，路徑依時間著色為各階段。
 
-    日頻軌跡雜訊太高會糊成一團，因此降頻到週頻再畫，螺旋才看得出來。
+    日頻甚至週頻的軌跡雜訊太高會糊成一團義大利麵，因此降頻到月頻再畫，
+    路徑才讀得出方向。階段判定本來也是在月頻上進行，兩者一致。
     """
     d = df.dropna(subset=["G", "I"])
     if d.empty:
@@ -112,7 +113,17 @@ def clock_svg(df: pd.DataFrame, w: int = 560, h: int = 460,
              f'opacity="0.28"/>')
     p.append(f'<circle cx="{px(xn):.1f}" cy="{py(yn):.1f}" r="6.5" fill="{cn}" '
              f'stroke="var(--bg)" stroke-width="2.5"/>')
-    p.append(f'<text x="{px(xn)+12:.1f}" y="{py(yn)+4:.1f}" class="ptlabel strong">現在</text>')
+    p.append(f'<text x="{px(xn)+12:.1f}" y="{py(yn)+4:.1f}" class="ptlabel strong">'
+             f'現在 {d.index[-1].strftime("%Y-%m")}</text>')
+    # 每年第一個點標年份，讓讀者能沿路徑定位時間
+    seen = set()
+    for k, ts in enumerate(d.index):
+        if ts.year not in seen and k not in (0, len(d) - 1):
+            seen.add(ts.year)
+            p.append(f'<circle cx="{px(pts[k][0]):.1f}" cy="{py(pts[k][1]):.1f}" '
+                     f'r="2.5" fill="var(--muted)"/>')
+            p.append(f'<text x="{px(pts[k][0])+6:.1f}" y="{py(pts[k][1])-6:.1f}" '
+                     f'class="tick">{ts.year}</text>')
 
     # 座標軸
     p.append(f'<text x="{m["l"]+pw/2}" y="{h-12}" class="axlabel" '
