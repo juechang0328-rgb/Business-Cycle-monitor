@@ -114,3 +114,61 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ------------------------------------------------------------- 加碼策略回測
+def dca_backtest(panel: pd.DataFrame, profile: str) -> pd.DataFrame:
+    """定期定額 vs 在景氣低點加碼。
+
+    與擇時的根本差別：全程都在市場裡，不放棄長期上漲，只調整每月投入多少。
+    為了公平，所有策略的**總投入金額完全相同** —— 否則投得多的當然賺得多。
+
+    對照組是關鍵：用「大盤離高點的回檔幅度」加碼，完全不需要景氣模型。
+    若模型贏不過這條單純的價格規則，它就沒有提供額外價值。
+
+    ⚠ 解讀這張表時必須先排除「搶先投入」這個陷阱。
+    在長期上漲的市場裡，任何把資金偏向前期的規則都會贏，而那與
+    「有沒有買在相對低點」無關。判斷方式：
+      1. 看加碼月份的年度分布是否集中在前幾年
+      2. 看同一年之內，加碼月份的均價是否真的比其餘月份低
+    本專案實測（econ、2015-2026）：加碼月份 2015/2016 佔 100%、
+    2018/2021/2022/2025 佔 0%，年內折價平均僅 -3%且 5 個年度中
+    僅 3 個為負 —— 亦即表面上 +14.6pp 的優勢主要來自搶先投入，
+    不是選時能力。用隨機月份做對照檢定會漏掉這個陷阱，
+    因為隨機抽樣在時間上是均勻分布的。
+    """
+    cfg.PROFILE = profile
+    a = cfg.active()
+    G, _ = scoring.build_axis(panel, a["growth"])
+    I, _ = scoring.build_axis(panel, a["inflation"])
+    result = stages.run(G, I)
+
+    px = panel["^GSPC"].resample("ME").last().dropna()
+    stage = result["stage"].resample("ME").last().shift(1).reindex(px.index)
+    g = G.resample("ME").last().shift(1).reindex(px.index)
+    dd = px / px.cummax() - 1                     # 目前離歷史高點多少
+
+    schemes = {
+        "定期定額（基準）": pd.Series(1.0, index=px.index),
+        "階段1-2 加碼": pd.Series(1.0, index=px.index).where(
+            ~stage.isin([1, 2]), 2.0),
+        "成長分數低時加碼": pd.Series(1.0, index=px.index).where(
+            ~(g < -0.5), 2.0),
+        "回檔10%以上加碼（不用模型）": pd.Series(1.0, index=px.index).where(
+            ~(dd < -0.10), 2.0),
+    }
+
+    rows = {}
+    for name, w in schemes.items():
+        w = w.fillna(1.0)
+        w = w / w.sum()                            # 總投入正規化為 1
+        shares = (w / px).cumsum()                 # 每月買進的股數累積
+        value = shares * px
+        invested = w.cumsum()
+        rows[name] = {
+            "最終價值": value.iloc[-1],
+            "總報酬": value.iloc[-1] / invested.iloc[-1] - 1,
+            "加碼月數": int((schemes[name] > 1).sum()),
+            "平均買進價": (invested.iloc[-1] / shares.iloc[-1]),
+        }
+    return pd.DataFrame(rows).T
