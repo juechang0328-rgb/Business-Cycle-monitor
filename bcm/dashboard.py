@@ -8,14 +8,25 @@ import pandas as pd
 
 from . import stages
 
+# 六階段配色。此順序經 CVD／對比驗證：相鄰配對（含 6→1 的循環回捲）
+# 在明暗兩種模式下皆通過。要改色請重跑調色盤驗證，不要憑眼睛選。
 STAGE_COLORS = {
-    1: "#5B8DB8",  # 衰退 藍
-    2: "#6FA85A",  # 谷底 綠
-    3: "#E0913A",  # 復甦 橙
-    4: "#D4B82E",  # 擴張 黃
-    5: "#3FA396",  # 高峰 青
-    6: "#8E7CB8",  # 趨緩 紫
+    1: "#2a78d6",  # 衰退 藍
+    2: "#eb6834",  # 谷底 橙
+    3: "#1baf7a",  # 復甦 青綠
+    4: "#eda100",  # 擴張 黃
+    5: "#e87ba4",  # 高峰 洋紅
+    6: "#008300",  # 趨緩 綠
 }
+STAGE_COLORS_DARK = {
+    1: "#3987e5", 2: "#d95926", 3: "#199e70",
+    4: "#c98500", 5: "#d55181", 6: "#008300",
+}
+
+def sc(stage) -> str:
+    """SVG 內以 CSS 變數引用階段色，深色模式才會自動切換。"""
+    n = int(stage) if stage and int(stage) in STAGE_COLORS else 0
+    return f"var(--st{n})" if n else "var(--muted)"
 
 STAGE_DESC = {
     1: "成長低迷且持續惡化，通膨已回落。央行開始降息，債券領先落底。",
@@ -82,7 +93,7 @@ def clock_svg(df: pd.DataFrame, w: int = 560, h: int = 460,
     # 軌跡：每段以「該段起點的階段」著色
     pts = list(zip(d["I"].tolist(), d["G"].tolist(), d["stage"].tolist()))
     for (x1, y1, s1), (x2, y2, _) in zip(pts, pts[1:]):
-        c = STAGE_COLORS.get(int(s1), "#9aa4b2")
+        c = sc(s1)
         p.append(f'<line x1="{px(x1):.1f}" y1="{py(y1):.1f}" x2="{px(x2):.1f}" '
                  f'y2="{py(y2):.1f}" stroke="{c}" stroke-width="2" '
                  f'stroke-linecap="round" opacity="0.75"/>')
@@ -96,7 +107,7 @@ def clock_svg(df: pd.DataFrame, w: int = 560, h: int = 460,
     if far:
         p.append(f'<text x="{px(x0)+8:.1f}" y="{py(y0)-8:.1f}" class="ptlabel">'
                  f'起點 {d.index[0].date()}</text>')
-    cn = STAGE_COLORS.get(int(sn), "#9aa4b2")
+    cn = sc(sn)
     p.append(f'<circle cx="{px(xn):.1f}" cy="{py(yn):.1f}" r="11" fill="{cn}" '
              f'opacity="0.28"/>')
     p.append(f'<circle cx="{px(xn):.1f}" cy="{py(yn):.1f}" r="6.5" fill="{cn}" '
@@ -140,7 +151,7 @@ def timeseries_svg(df: pd.DataFrame, w: int = 900, h: int = 300) -> str:
     start = 0
     for i in range(1, n + 1):
         if i == n or st[i] != st[start]:
-            c = STAGE_COLORS.get(int(st[start]), "#9aa4b2")
+            c = sc(st[start])
             x1, x2 = px(start), px(i - 1)
             p.append(f'<rect x="{x1:.1f}" y="{m["t"]}" width="{max(x2-x1,0.8):.1f}" '
                      f'height="{ph}" fill="{c}" opacity="0.16"/>')
@@ -223,7 +234,7 @@ def stage_strip(current: int) -> str:
         on = "on" if s == current else ""
         b, e, c = stages.STAGE_ASSETS[s]
         cells.append(
-            f'<div class="stage-cell {on}" style="--sc:{STAGE_COLORS[s]}">'
+            f'<div class="stage-cell {on}" style="--sc:var(--st{s})">'
             f'<div class="sc-num">階段{s}</div>'
             f'<div class="sc-name">{stages.STAGE_NAMES[s]}</div>'
             f'<div class="sc-assets">{b} {e} {c}</div></div>')
@@ -241,7 +252,7 @@ def recent_transitions(df: pd.DataFrame, limit: int = 6) -> str:
         end = idx[i + 1] if i + 1 < len(idx) else d.index[-1]
         days = max((end - ts).days, 0)
         rows.append(f"<tr><td class='num'>{ts.date()}</td>"
-                    f"<td><span class='dot' style='background:{STAGE_COLORS.get(s,'#888')}'></span>"
+                    f"<td><span class='dot' style='background:{sc(s)}'></span>"
                     f"階段{s} {stages.STAGE_NAMES.get(s,'—')}</td>"
                     f"<td class='num'>{days} 天</td></tr>")
     return ("<table><thead><tr><th>進入日期</th><th>階段</th><th class='num'>持續</th>"
@@ -253,14 +264,20 @@ CSS = """
 :root{
   --bg:#ffffff; --panel:#f7f8fa; --line:#e3e6ea; --ink:#16191d; --muted:#6b7280;
   --pos:#1a7f5a; --neg:#c0392b; --g:#2563eb; --i:#d97706;
+  --st1:#2a78d6; --st2:#eb6834; --st3:#1baf7a;
+  --st4:#eda100; --st5:#e87ba4; --st6:#008300;
 }
 :root:not([data-theme="light"]){ @media (prefers-color-scheme:dark){
   --bg:#12151a; --panel:#1a1e25; --line:#2b313b; --ink:#e8eaed; --muted:#9aa4b2;
   --pos:#4ade80; --neg:#f87171; --g:#60a5fa; --i:#fbbf24;
+  --st1:#3987e5; --st2:#d95926; --st3:#199e70;
+  --st4:#c98500; --st5:#d55181; --st6:#008300;
 }}
 :root[data-theme="dark"]{
   --bg:#12151a; --panel:#1a1e25; --line:#2b313b; --ink:#e8eaed; --muted:#9aa4b2;
   --pos:#4ade80; --neg:#f87171; --g:#60a5fa; --i:#fbbf24;
+  --st1:#3987e5; --st2:#d95926; --st3:#199e70;
+  --st4:#c98500; --st5:#d55181; --st6:#008300;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -281,7 +298,7 @@ h2{font-size:15px;margin:30px 0 12px;color:var(--muted);font-weight:600;
 .scores{display:flex;gap:26px;flex-wrap:wrap;margin-top:16px;padding-top:14px;
   border-top:1px solid var(--line)}
 .score .k{color:var(--muted);font-size:12px}
-.score .v{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums}
+.score .v{font-size:21px;font-weight:700}
 .note{background:var(--panel);border:1px solid var(--line);border-radius:8px;
   padding:10px 14px;font-size:13px;color:var(--muted);margin-top:10px}
 .stage-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:14px 0 4px}
@@ -297,7 +314,7 @@ h2{font-size:15px;margin:30px 0 12px;color:var(--muted);font-weight:600;
 .card h3{margin:0 0 10px;font-size:14px;font-weight:600}
 .chart{width:100%;height:auto;display:block}
 .plot{fill:none;stroke:var(--line)}
-.axis0{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3;opacity:.55}
+.axis0{stroke:var(--line);stroke-width:1;opacity:1}
 .tick{font-size:10px;fill:var(--muted)}
 .axlabel{font-size:11px;fill:var(--muted)}
 .quad{font-size:10px;fill:var(--muted);opacity:.65}
@@ -305,6 +322,10 @@ h2{font-size:15px;margin:30px 0 12px;color:var(--muted);font-weight:600;
 .ptlabel.strong{fill:var(--ink);font-weight:700}
 .startpt{fill:var(--muted)}
 .lineG{fill:none;stroke:var(--g);stroke-width:2}
+.lineReal{fill:none;stroke:var(--ink);stroke-width:2}
+.endpt{fill:var(--ink)}
+.tl-label{font-size:11.5px;fill:#fff;font-weight:600;
+  paint-order:stroke;stroke:rgba(0,0,0,.28);stroke-width:2.5px}
 .lineI{fill:none;stroke:var(--i);stroke-width:2;stroke-dasharray:5 3}
 .legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin-top:8px}
 .legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
@@ -323,6 +344,20 @@ th{color:var(--muted);font-weight:600;font-size:12px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 .pos{color:var(--pos)} .neg{color:var(--neg)} .muted{color:var(--muted)}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:-1px}
+.tl-wrap{overflow:hidden}
+.tl-legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:12px;color:var(--muted)}
+.tl-legend span{display:flex;align-items:center;gap:5px}
+.tl-legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
+.explain{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:18px 20px;margin-top:18px}
+.explain h3{margin:0 0 10px;font-size:14px}
+.explain p{margin:0 0 10px;font-size:13.5px;color:var(--muted);max-width:78ch}
+.explain b{color:var(--ink)}
+.explain ul{margin:6px 0 10px;padding-left:20px;font-size:13.5px;color:var(--muted)}
+.explain li{margin-bottom:5px}
+.warnbox{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--i);
+  border-radius:8px;padding:12px 16px;margin-top:14px;font-size:13.5px;color:var(--muted)}
+.warnbox b{color:var(--ink)}
 footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
   color:var(--muted);font-size:12px;line-height:1.7}
 @media(max-width:760px){
@@ -335,12 +370,13 @@ footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);
 
 
 def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFrame,
-                panel: pd.DataFrame, cfg, demo: bool = False) -> str:
+                panel: pd.DataFrame, cfg, demo: bool = False,
+                full_result: pd.DataFrame | None = None) -> str:
     d = result.dropna(subset=["G", "I"])
     last, date = d.iloc[-1], d.index[-1].date()
     stage = int(last["stage"])
     raw = int(last["raw_stage"])
-    color = STAGE_COLORS.get(stage, "#888")
+    color = sc(stage)
     b, e, c = stages.STAGE_ASSETS.get(stage, ("—", "—", "—"))
 
     pending = ""
@@ -348,6 +384,22 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
         pending = (f'<div class="note">⚠ 原始判定已轉為 <b>階段{raw} '
                    f'{stages.STAGE_NAMES[raw]}</b>，但尚未滿足連續確認天數，'
                    f'因此正式階段暫不換檔 —— 這是轉折觀察期，值得留意。</div>')
+
+    # 長期時間軸用完整歷史；一個景氣循環約 4-5 年，只看三年看不到完整循環
+    long_df = full_result if full_result is not None else result
+    span_years = (long_df.index[-1] - long_df.index[0]).days / 365.25
+    short_span = ""
+    if span_years < 4.5:
+        short_span = ('<div class="warnbox">⚠ <b>這段期間短於一個完整景氣循環。</b>'
+                      f'目前資料只涵蓋約 {span_years:.1f} 年，而一個循環通常要 4–5 年，'
+                      '所以看不到全部六個階段是正常的，不代表景氣沒有循環。'
+                      '想看完整循環，用 <code>--start 2006-01-01 --years 20</code> 重跑。</div>')
+
+    reality = "".join(
+        f'<div class="card"><h3>{_esc(t)}</h3>'
+        f'{reality_svg(panel, long_df, code, tf)}'
+        f'<p class="sub" style="margin:8px 0 0">{_esc(desc)}</p></div>'
+        for t, code, tf, desc, _good in getattr(cfg, "REALITY_CHECK", []))
 
     demo_banner = ('<div class="demo">⚠ 這是以合成資料產生的示範頁面，'
                    '數字不具任何參考價值。請執行 <code>python run.py --html</code> '
@@ -383,6 +435,40 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
 {pending}
 {stage_strip(stage)}
 
+<h2>階段時間軸</h2>
+<div class="card tl-wrap">
+  {stage_timeline_svg(long_df)}
+  {timeline_legend()}
+  <p class="sub" style="margin:10px 0 0">
+    涵蓋全部可用歷史（非僅顯示區間）。色塊寬度＝該階段持續多久，滑過可看起迄日期。</p>
+</div>
+{short_span}
+
+<h2>這兩個分數是什麼</h2>
+<div class="explain">
+  <p><b>成長分數 G</b> 不是 GDP，也不是任何官方統計。它是「<b>市場現在怎麼替景氣定價</b>」的
+  綜合分數 —— 把四個對景氣最敏感的市場訊號，各自算出「過去三個月的變化」，
+  再換算成 z-score（相對於自己的歷史，現在是偏高還偏低），最後加權平均。</p>
+  <ul>
+    <li><b>G = 0</b>　三個月動能處於歷史平均水準</li>
+    <li><b>G = +1</b>　比歷史平均高一個標準差，市場在對「景氣轉強」定價</li>
+    <li><b>G = −1</b>　反之</li>
+  </ul>
+  <p><b>通膨分數 I</b> 同理，衡量市場對物價與原物料的定價。
+  兩者一起決定六個階段 —— G 決定股票方向，I 決定債券與原物料方向。</p>
+  <p><b>它跟「驗證景氣循環」是什麼關係？</b>
+  嚴格說，G <b>不驗證</b>景氣，它<b>提前反映</b>景氣。市場定價平均領先實體經濟約 6–9 個月，
+  所以 G 是領先代理變數，不是景氣本身。真正要驗證，得看下面的實體經濟數據 ——
+  如果 G 轉弱後幾個月，初領失業金真的開始上升、工業生產真的走弱，那就代表訊號有效；
+  如果沒有，那就是假訊號。</p>
+</div>
+
+<h2>實體經濟對照</h2>
+<div class="grid">{reality}</div>
+<p class="sub" style="margin:10px 0 0">
+  背景色塊是當時的階段判定，黑線是真實經濟數據。
+  兩者是否對得上，就是這套系統可不可信的檢驗。</p>
+
 <h2>景氣時鐘</h2>
 <div class="card">
   {clock_svg(d)}
@@ -416,3 +502,117 @@ def render_html(result: pd.DataFrame, g_parts: pd.DataFrame, i_parts: pd.DataFra
   本頁僅供研究參考，不構成投資建議。
 </footer>
 </div></body></html>"""
+
+
+# ------------------------------------------------------- 階段時間軸與實體對照
+def stage_timeline_svg(df: pd.DataFrame, w: int = 900, h: int = 92) -> str:
+    """一條水平時間軸，把整段歷史的階段畫成色塊 —— 最直觀的「看懂循環」入口。"""
+    d = df.dropna(subset=["G", "I"])
+    if d.empty:
+        return "<p>資料不足</p>"
+    m = {"l": 4, "r": 4, "t": 4, "b": 26}
+    pw, bh = w - m["l"] - m["r"], h - m["t"] - m["b"]
+    n = len(d)
+    px = lambda i: m["l"] + (i / max(n - 1, 1)) * pw
+
+    p = [f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" '
+         f'aria-label="景氣階段時間軸">']
+    st = d["stage"].tolist()
+    start = 0
+    for i in range(1, n + 1):
+        if i == n or st[i] != st[start]:
+            s0 = int(st[start])
+            x1, x2 = px(start), px(i - 1)
+            seg_w = max(x2 - x1, 1.0)
+            # 2px 表面間隙分隔相鄰色塊，不用描邊
+            p.append(f'<rect x="{x1:.1f}" y="{m["t"]}" width="{max(seg_w-2,1):.1f}" '
+                     f'height="{bh}" fill="{sc(s0)}" rx="3">'
+                     f'<title>階段{s0} {stages.STAGE_NAMES.get(s0,"")}　'
+                     f'{d.index[start].date()} → {d.index[i-1].date()}</title></rect>')
+            if seg_w > 72 and s0:                       # 夠寬才放字，避免被裁切
+                p.append(f'<text x="{(x1+x2)/2:.1f}" y="{m["t"]+bh/2+4:.1f}" '
+                         f'class="tl-label" text-anchor="middle">'
+                         f'{s0} {stages.STAGE_NAMES.get(s0,"")}</text>')
+            start = i
+
+    # 年度刻度：間距不足就跳年標示，避免標籤互相疊字
+    years = sorted({d.index[i].year for i in range(n)})
+    first_pos = {y: next(i for i in range(n) if d.index[i].year == y) for y in years}
+    min_gap = 46
+    last_x = -1e9
+    for y in years:
+        x = px(first_pos[y])
+        if x - last_x < min_gap:
+            continue
+        last_x = x
+        p.append(f'<line x1="{x:.1f}" y1="{m["t"]}" x2="{x:.1f}" '
+                 f'y2="{m["t"]+bh}" stroke="var(--bg)" stroke-width="1" opacity=".55"/>')
+        # 首尾標籤向內縮，避免被畫布邊緣裁掉
+        tx = min(max(x, 16), w - 16)
+        p.append(f'<text x="{tx:.1f}" y="{h-8}" class="tick" '
+                 f'text-anchor="middle">{y}</text>')
+    p.append("</svg>")
+    return "".join(p)
+
+
+def timeline_legend() -> str:
+    items = "".join(
+        f'<span><i style="background:{sc(s)}"></i>{s} {stages.STAGE_NAMES[s]}</span>'
+        for s in range(1, 7))
+    return f'<div class="tl-legend">{items}</div>'
+
+
+def reality_svg(panel: pd.DataFrame, result: pd.DataFrame, code: str,
+                transform: str, w: int = 430, h: int = 190) -> str:
+    """實體經濟對照：真實數據疊在階段色帶上，用來檢驗市場訊號有沒有說對。
+
+    每張圖各有自己的 y 軸（絕不把兩個不同量綱疊在同一個座標系上）。
+    """
+    if code not in panel.columns:
+        return "<p class='sub'>此序列無資料</p>"
+    idx = result.dropna(subset=["G", "I"]).index
+    s = panel[code].reindex(idx)
+    if transform == "yoy":
+        s = panel[code].pct_change(252).reindex(idx) * 100
+    s = s.dropna()
+    if len(s) < 10:
+        return "<p class='sub'>歷史不足</p>"
+
+    m = {"l": 44, "r": 10, "t": 10, "b": 24}
+    pw, ph = w - m["l"] - m["r"], h - m["t"] - m["b"]
+    lo, hi = _nice_bounds(float(s.min()), float(s.max()), 0.10)
+    n = len(s)
+    px = lambda i: m["l"] + (i / max(n - 1, 1)) * pw
+    py = lambda v: m["t"] + _scale(v, lo, hi, ph, 0)
+
+    p = [f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" aria-label="{_esc(code)}">']
+    st = result["stage"].reindex(s.index).ffill().fillna(0).tolist()
+    start = 0
+    for i in range(1, n + 1):
+        if i == n or st[i] != st[start]:
+            p.append(f'<rect x="{px(start):.1f}" y="{m["t"]}" '
+                     f'width="{max(px(i-1)-px(start),0.8):.1f}" height="{ph}" '
+                     f'fill="{sc(st[start])}" opacity="0.18"/>')
+            start = i
+
+    if lo <= 0 <= hi:
+        p.append(f'<line x1="{m["l"]}" y1="{py(0):.1f}" x2="{m["l"]+pw}" '
+                 f'y2="{py(0):.1f}" class="axis0"/>')
+    pts = " ".join(f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(s))
+    p.append(f'<polyline points="{pts}" class="lineReal"/>')
+    # 只標端點，不是每個點都標
+    p.append(f'<circle cx="{px(n-1):.1f}" cy="{py(s.iloc[-1]):.1f}" r="4.5" '
+             f'class="endpt"/>')
+    unit = "%" if transform == "yoy" else ""
+    p.append(f'<text x="{px(n-1)-6:.1f}" y="{py(s.iloc[-1])-10:.1f}" '
+             f'class="ptlabel strong" text-anchor="end">{s.iloc[-1]:,.1f}{unit}</text>')
+
+    for v in [lo + (hi - lo) * f for f in (0.05, 0.5, 0.95)]:
+        p.append(f'<text x="{m["l"]-7}" y="{py(v)+4:.1f}" class="tick" '
+                 f'text-anchor="end">{v:,.0f}</text>')
+    step = max(n // 4, 1)
+    for i in range(0, n, step):
+        p.append(f'<text x="{px(i):.1f}" y="{h-7}" class="tick" '
+                 f'text-anchor="middle">{s.index[i].strftime("%Y-%m")}</text>')
+    p.append("</svg>")
+    return "".join(p)

@@ -148,8 +148,11 @@ def test_dashboard_renders_valid_page():
                                  ip.loc[ip.index >= cutoff], panel, cfg, demo=True)
 
     assert html.startswith("<!DOCTYPE html>") and html.rstrip().endswith("</html>")
-    assert "<svg" in html and html.count("<svg") == 2      # 時鐘 + 走勢圖
+    # 時間軸 + 時鐘 + 走勢圖 + 兩張實體經濟對照
+    assert html.count("<svg") == 3 + len(cfg.REALITY_CHECK)
     assert "景氣循環監測" in html
+    assert "階段時間軸" in html and "實體經濟對照" in html
+    assert "這兩個分數是什麼" in html, "頁面需自行解釋 G 與 I"
     assert "示範資料" in html or "示範頁面" in html         # demo 標記必須出現
     stage = int(view.dropna(subset=["G", "I"]).iloc[-1]["stage"])
     assert f"階段 {stage}" in html
@@ -171,7 +174,31 @@ def test_all_six_stages_have_colour_and_description():
     from bcm import dashboard
     for s in range(1, 7):
         assert s in dashboard.STAGE_COLORS
+        assert s in dashboard.STAGE_COLORS_DARK
         assert dashboard.STAGE_DESC[s].strip()
+
+
+def test_stage_colours_are_referenced_as_theme_variables():
+    """SVG 內必須用 CSS 變數，深色模式才會跟著切換。"""
+    from bcm import dashboard
+    assert dashboard.sc(3) == "var(--st3)"
+    assert dashboard.sc(0) == "var(--muted)"
+    assert dashboard.sc(None) == "var(--muted)"
+
+
+def test_short_window_warns_that_it_is_under_one_cycle():
+    """不足一個完整循環（4-5年）時必須明講，否則會誤導成『沒有循環』。"""
+    import run
+    from bcm import dashboard, indicators as cfg
+
+    panel = run.synthetic_panel()
+    result, gp, ip = run.compute(panel, confirm=10)
+    short = result.loc[result.index >= result.index[-1] - pd.DateOffset(years=2)]
+    html = dashboard.render_html(short, gp, ip, panel, cfg, full_result=short)
+    assert "短於一個完整景氣循環" in html
+
+    long_html = dashboard.render_html(short, gp, ip, panel, cfg, full_result=result)
+    assert "短於一個完整景氣循環" not in long_html
 
 
 # ------------------------------------------------------------------ 資料快取

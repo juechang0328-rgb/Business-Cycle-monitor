@@ -50,10 +50,12 @@ def classify(G: pd.Series, dG: pd.Series, I: pd.Series) -> pd.Series:
     )
 
 
-def apply_hysteresis(raw: pd.Series, confirm: int = 10) -> pd.Series:
+def apply_hysteresis(raw: pd.Series, confirm: int = 63) -> pd.Series:
     """遲滯：新階段需連續 `confirm` 個交易日成立才正式換檔。
 
-    避免 G 或 I 在 0 附近來回時每天跳階。
+    預設 63 個交易日（約三個月）。這個值是實測出來的：景氣階段持續的單位是
+    「季」而不是「週」，確認期設太短（例如兩週）會讓判定在日頻雜訊下不停跳動，
+    時間軸被切成幾十段碎片，反而讀不出循環。
     """
     out, current, streak, pending = [], 0, 0, 0
     for v in raw:
@@ -76,7 +78,7 @@ def apply_hysteresis(raw: pd.Series, confirm: int = 10) -> pd.Series:
 
 
 def run(G: pd.Series, I: pd.Series, momentum_lookback: int = 63,
-        confirm: int = 10) -> pd.DataFrame:
+        confirm: int = 63) -> pd.DataFrame:
     """完整流程：由 G/I 算出動能、原始階段與遲滯後的正式階段。"""
     dG = G - G.shift(momentum_lookback)
     dI = I - I.shift(momentum_lookback)

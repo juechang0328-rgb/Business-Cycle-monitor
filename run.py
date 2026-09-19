@@ -33,7 +33,7 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - _width(text))
 
 
-def compute(panel: pd.DataFrame, confirm: int = 10):
+def compute(panel: pd.DataFrame, confirm: int = 63):
     G, g_parts = scoring.build_axis(panel, cfg.GROWTH_SPECS)
     I, i_parts = scoring.build_axis(panel, cfg.INFLATION_SPECS)
     return stages.run(G, I, confirm=confirm), g_parts, i_parts
@@ -110,7 +110,8 @@ def main() -> int:
     p.add_argument("--start", default="2015-01-01",
                    help="抓取起始日（需早於顯示區間，供 z-score 建立基準）")
     p.add_argument("--years", type=int, default=3, help="儀表板顯示最近幾年（預設 3）")
-    p.add_argument("--confirm", type=int, default=10, help="換檔需連續確認的交易日數")
+    p.add_argument("--confirm", type=int, default=63,
+                   help="換檔需連續確認的交易日數（預設 63≈3個月；調小會更敏感也更雜亂）")
     p.add_argument("--html", nargs="?", const="dashboard.html", default=None,
                    help="產生 HTML 儀表板")
     p.add_argument("--csv", help="匯出完整時間序列")
@@ -147,7 +148,8 @@ def main() -> int:
         view = result.loc[result.index >= cutoff]
         html = dashboard.render_html(view, g_parts.loc[g_parts.index >= cutoff],
                                      i_parts.loc[i_parts.index >= cutoff],
-                                     panel, cfg, demo=args.demo)
+                                     panel, cfg, demo=args.demo,
+                                     full_result=result)
         with open(args.html, "w", encoding="utf-8") as f:
             f.write(html)
         print(f"\n  儀表板已輸出：{args.html}")
