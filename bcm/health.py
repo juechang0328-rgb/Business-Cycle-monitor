@@ -27,6 +27,16 @@ def check_series(s: pd.Series, freq: str, asof: pd.Timestamp) -> dict:
                 "n": 0, "detail": "整個序列都是缺值"}
     last = valid.index[-1]
     age = (asof - last).days
+    if freq == "projection":
+        # 預測型序列（例如 FOMC 點陣圖）的觀測日標在被預測的未來年度，
+        # 用「落後幾天」判斷毫無意義，改看最後一筆是否仍指向未來。
+        if age < 0:
+            return {"status": "正常", "last": last, "age_days": age,
+                    "n": int(valid.notna().sum()),
+                    "detail": f"預測至 {last.date()}"}
+        return {"status": "延遲", "last": last, "age_days": age,
+                "n": int(valid.notna().sum()),
+                "detail": f"最後預測年度已過期 {age} 天，等待下次 SEP 更新"}
     tol = TOLERANCE_DAYS.get(freq, 55)
     if age > tol * 3:
         status, detail = "停更", f"已 {age} 天無新值（容許 {tol} 天）"

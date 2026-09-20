@@ -197,6 +197,8 @@ MACRO_FRED = [
     "DGS5", "DGS7", "DGS10", "DGS20", "DGS30",
     # 政策利率：曲線的左端錨點
     "DFEDTARU", "DFEDTARL", "DFF",
+    # FOMC 點陣圖（Summary of Economic Projections）：每季更新，觀測日在未來
+    "FEDTARMD", "FEDTARMDLR",
     # 央行流動性（單位不一致，見 bcm/derived.py）
     "WALCL", "WTREGEN", "RRPONTSYD", "DTWEXBGS",
     # 金融壓力
@@ -207,6 +209,7 @@ MACRO_FRED = [
 
 MACRO_YAHOO = [
     "HG=F", "GC=F", "CL=F", "^VIX", "^GSPC", "^IXIC",
+    "ZQ=F",   # 30 天期 Fed Funds 期貨（隱含利率 = 100 − 價格）
     # 能源
     "BZ=F",   # 布蘭特原油（CL=F 是西德州 WTI，兩者價差反映運輸與品質差異）
     "NG=F",   # 天然氣
@@ -272,6 +275,9 @@ MACRO_HEALTH = [
     ("政策利率上限",    "DFEDTARU",     "daily"),
     ("政策利率下限",    "DFEDTARL",     "daily"),
     ("有效聯邦資金利率", "DFF",          "daily"),
+    ("Fed Funds 期貨",  "ZQ=F",         "daily"),
+    ("點陣圖中位數",    "FEDTARMD",     "projection"),
+    ("點陣圖長期中位數", "FEDTARMDLR",  "projection"),
     ("1個月期殖利率",   "DGS1MO",       "daily"),
     ("3個月期殖利率",   "DGS3MO",       "daily"),
     ("6個月期殖利率",   "DGS6MO",       "daily"),
@@ -329,6 +335,8 @@ MACRO_GROUPS = [
     ("公債殖利率", [
         ("政策利率上限", "DFEDTARU", "level", None),
         ("有效聯邦資金利率", "DFF", "level", None),
+        ("市場定價（期貨）", "FF_IMPLIED", "level", None),
+        ("Fed 點陣圖中位數", "FEDTARMD", "level", None),
         ("1個月",  "DGS1MO", "level", None),
         ("3個月",  "DGS3MO", "level", None),
         ("6個月",  "DGS6MO", "level", None),

@@ -39,6 +39,16 @@ DERIVED = {
         "display_unit": "",
         "note": "WTI 原油／黃金，乘 1000 便於閱讀",
     },
+    "FF_IMPLIED": {
+        "name": "期貨隱含政策利率",
+        "requires": ["ZQ=F"],
+        # 30 天期 Fed Funds 期貨的報價慣例：隱含利率 = 100 − 價格
+        "fn": lambda p: 100 - p["ZQ=F"],
+        "unit": "%",
+        "scale": 1.0,
+        "display_unit": "",
+        "note": "100 − ZQ=F 價格。這是近月合約，反映未來約一個月的政策利率定價",
+    },
     "SAHM_GAP": {
         "name": "Sahm Rule 缺口",
         "requires": ["UNRATE"],

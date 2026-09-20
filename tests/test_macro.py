@@ -320,3 +320,34 @@ def test_curve_card_states_provenance():
     out = macro_dash.yield_curve_svg(panel)
     assert "實際標售的證券" in out
     assert "內插" in out
+
+
+# ------------------------------------------------------ 期貨隱含利率與點陣圖
+def test_fed_funds_futures_implied_rate():
+    """Fed Funds 期貨的報價慣例：隱含利率 = 100 − 價格。"""
+    idx = pd.bdate_range(end="2026-09-18", periods=5)
+    panel = pd.DataFrame({"ZQ=F": [96.12] * 5}, index=idx)
+    out, skipped = derived.add_derived(panel)
+    assert not skipped.get("FF_IMPLIED")
+    assert out["FF_IMPLIED"].iloc[-1] == pytest.approx(3.88)
+
+
+def test_projection_series_not_flagged_stale():
+    """點陣圖的觀測日標在未來年度，不可用『落後幾天』判為停更。"""
+    future = pd.Timestamp("2026-09-18") + pd.DateOffset(years=2)
+    idx = pd.DatetimeIndex([pd.Timestamp("2026-12-31"), future])
+    panel = pd.DataFrame({"FEDTARMD": [3.6, 3.1]}, index=idx)
+    h = health.check_panel(panel, [("點陣圖", "FEDTARMD", "projection")],
+                           asof=pd.Timestamp("2026-09-18"))
+    assert h.iloc[0]["status"] == "正常"
+    assert "預測至" in h.iloc[0]["detail"]
+
+
+def test_projection_series_flagged_when_outdated():
+    """若最後一筆預測年度已過去，代表 SEP 沒更新，應標為延遲。"""
+    idx = pd.DatetimeIndex([pd.Timestamp("2024-12-31")])
+    panel = pd.DataFrame({"FEDTARMD": [4.4]}, index=idx)
+    h = health.check_panel(panel, [("點陣圖", "FEDTARMD", "projection")],
+                           asof=pd.Timestamp("2026-09-18"))
+    assert h.iloc[0]["status"] == "延遲"
+    assert "SEP" in h.iloc[0]["detail"]
