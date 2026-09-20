@@ -46,6 +46,10 @@ TICKER_ALIASES = {
 # 兩種尺度會被接在同一條序列上，算出來的變化率完全是垃圾，而且不會報錯。
 ALIAS_SOURCE: dict[str, str] = {}
 
+# 有權威原生來源的序列：優先用它，不必繞 Yahoo。
+NATIVE_SOURCE = {}          # 在 fetch_tpex_index 定義後填入（見檔案下方）
+NATIVE_NAME = {"^TWOII": "TPEx"}
+
 CHART_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
 
 
@@ -154,6 +158,139 @@ def resolve_aliases(tickers: Iterable[str]) -> tuple[list[str], dict[str, list[s
     return out, alias
 
 
+# ------------------------------------------------------------ 櫃買中心（TPEx）
+# Yahoo Finance 的報價 API 沒有收錄櫃買指數：把 TLS 指紋偽裝處理掉之後，
+# 它對 ^TWOII 回的是明確的 HTTP 404，不再是機器人偵測的 429。
+# （使用者看到的 tw.stock.yahoo.com 是 Yahoo 奇摩股市，和 finance.yahoo.com
+#  的報價 API 是兩套不同的東西。）
+# 正確的來源是櫃買中心自己：權威、不限流、不需要偽裝。
+#
+# 站方在 2024 年改版過，新舊端點並存且文件不齊，因此列出多個候選格式
+# 一一嘗試，並把實際成功的那個印出來。抓不到時退回 ETF 代理。
+TPEX_ENDPOINTS = [
+    # 新版（改版後）：單日全部指數
+    ("tpex-www-dailyIndex",
+     "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyIndex"
+     "?date={ymd}&response=json"),
+    # OpenAPI：當日收盤指數
+    ("tpex-openapi-index",
+     "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_index"),
+    # 舊版：整月每日指數（民國年/月）
+    ("tpex-st42",
+     "https://www.tpex.org.tw/web/stock/aftertrading/daily_index/"
+     "st42_result.php?l=zh-tw&d={roc}&o=json"),
+]
+
+
+def _http_json(url: str, timeout: int = 20) -> tuple[int, object | None, str]:
+    """取一次 JSON，回傳 (狀態碼, 解析後物件或 None, 前 200 字原文)。
+
+    原文一起回傳是刻意的：端點格式沒有文件時，看得到回應長什麼樣子
+    才有辦法決定下一步，否則只能盲猜。
+    """
+    import json
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+    }
+    try:
+        from curl_cffi import requests as creq
+        r = creq.get(url, headers=headers, timeout=timeout,
+                     impersonate="chrome")
+        text, code = r.text, r.status_code
+    except Exception as e:
+        return 0, None, f"{type(e).__name__}: {e}"[:200]
+    try:
+        return code, json.loads(text), text[:200]
+    except Exception:
+        return code, None, text[:200]
+
+
+def _tpex_rows(obj) -> list:
+    """把 TPEx 幾種回應格式攤平成資料列。"""
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        for k in ("aaData", "tables", "data", "result"):
+            v = obj.get(k)
+            if isinstance(v, list) and v:
+                if k == "tables" and isinstance(v[0], dict):
+                    return v[0].get("data") or []
+                return v
+    return []
+
+
+def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
+    """從櫃買中心取櫃買指數收盤。逐一試候選端點，成功即回傳。"""
+    today = pd.Timestamp.today().normalize()
+    roc = f"{today.year - 1911}/{today.month:02d}"
+    for name, tpl in TPEX_ENDPOINTS:
+        url = tpl.format(ymd=today.strftime("%Y%m%d"), roc=roc)
+        code, obj, peek = _http_json(url)
+        rows = _tpex_rows(obj) if obj is not None else []
+        if not rows:
+            print(f"  · TPEx {name} 無法使用（HTTP {code}）：{peek[:120]}")
+            continue
+        s = _parse_tpex(rows)
+        if s is not None and not s.empty:
+            print(f"  TPEx：櫃買指數取自 {name}（{len(s)} 筆）")
+            return s.loc[start:]
+        print(f"  · TPEx {name} 格式無法解析：{str(rows[0])[:120]}")
+    raise RuntimeError("櫃買中心所有候選端點都取不到指數")
+
+
+def _parse_tpex(rows: list) -> pd.Series | None:
+    """從資料列裡找出（日期, 收盤指數）。
+
+    TPEx 的欄位名稱與順序在改版前後不一致，因此用「找得到日期就用」的
+    寬鬆解法，而不是寫死欄位位置 —— 寫死一改版就靜靜地壞掉。
+    """
+    out: dict[pd.Timestamp, float] = {}
+    for row in rows:
+        vals = list(row.values()) if isinstance(row, dict) else list(row)
+        d = v = None
+        for x in vals:
+            if not isinstance(x, str):
+                continue
+            t = x.strip()
+            if d is None:
+                d = _tpex_date(t)
+                if d is not None:
+                    continue
+            if v is None and d is not None:
+                try:
+                    v = float(t.replace(",", ""))
+                except ValueError:
+                    pass
+        if d is not None and v is not None:
+            out[d] = v
+    if not out:
+        return None
+    return pd.Series(out).sort_index()
+
+
+def _tpex_date(t: str) -> pd.Timestamp | None:
+    """接受民國年（115/09/19）與西元年（2026-09-19、20260919）。"""
+    import re
+    if re.fullmatch(r"\d{2,3}/\d{1,2}/\d{1,2}", t):
+        y, m, d = t.split("/")
+        try:
+            return pd.Timestamp(int(y) + 1911, int(m), int(d))
+        except ValueError:
+            return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return pd.Timestamp(pd.to_datetime(t, format=fmt))
+        except Exception:
+            continue
+    return None
+
+
+NATIVE_SOURCE["^TWOII"] = fetch_tpex_index
+
+
 def prefetch_aliases(alias: dict[str, list[str]], start: str,
                      retries: int = 2) -> dict[str, pd.Series]:
     """在大批下載之前，先用 chart 端點取第一順位代號。
@@ -165,6 +302,19 @@ def prefetch_aliases(alias: dict[str, list[str]], start: str,
     for canon, cands in alias.items():
         if not cands:
             continue
+        native = NATIVE_SOURCE.get(canon)
+        if native is not None:
+            try:
+                s = native(start)
+            except Exception as e:
+                print(f"  · {canon} 原生來源失敗：{e}")
+            else:
+                if not s.empty:
+                    out[canon] = s
+                    ALIAS_SOURCE[canon] = NATIVE_NAME.get(canon, canon)
+                    print(f"  {canon} 取自原生來源（{len(s)} 筆，"
+                          f"起自 {s.index[0].date()}）")
+                    continue
         try:
             s = fetch_yahoo_chart(cands[0], start=start, retries=retries)
         except Exception as e:

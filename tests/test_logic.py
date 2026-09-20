@@ -672,3 +672,66 @@ def test_prefetch_failure_leaves_batch_result_alone(monkeypatch):
     assert pre == {}
     close = pd.DataFrame({"^TWOII": 46.0}, index=idx)
     assert (sources.apply_prefetched(close, pre)["^TWOII"] == 46.0).all()
+
+
+def test_tpex_parser_handles_roc_and_western_dates():
+    """TPEx 改版前後的欄位順序與日期格式都不一樣，解析要夠寬鬆。"""
+    from bcm.sources import _parse_tpex, _tpex_date
+
+    assert _tpex_date("115/09/19") == pd.Timestamp("2026-09-19")   # 民國年
+    assert _tpex_date("2026-09-19") == pd.Timestamp("2026-09-19")
+    assert _tpex_date("20260919") == pd.Timestamp("2026-09-19")
+    assert _tpex_date("不是日期") is None
+
+    # 舊版 aaData：list of list，民國年，千分位逗號
+    old = [["115/09/18", "245.15", "1,234,567"],
+           ["115/09/19", "246.30", "1,111,111"]]
+    s = _parse_tpex(old)
+    assert s.loc[pd.Timestamp("2026-09-19")] == 246.30
+
+    # 新版：list of dict，西元年
+    new = [{"Date": "2026-09-19", "Close": "246.30", "Name": "櫃買指數"}]
+    assert _parse_tpex(new).iloc[0] == 246.30
+
+    assert _parse_tpex([["沒有日期", "abc"]]) is None
+
+
+def test_tpex_rows_flattens_response_shapes():
+    from bcm.sources import _tpex_rows
+
+    assert _tpex_rows([{"a": 1}]) == [{"a": 1}]
+    assert _tpex_rows({"aaData": [[1, 2]]}) == [[1, 2]]
+    assert _tpex_rows({"tables": [{"data": [[3, 4]]}]}) == [[3, 4]]
+    assert _tpex_rows({"nothing": 1}) == []
+    assert _tpex_rows(None) == []
+
+
+def test_native_source_wins_over_yahoo(monkeypatch):
+    """有權威原生來源時不該再繞 Yahoo。"""
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)
+    monkeypatch.setitem(sources.NATIVE_SOURCE, "^TWOII",
+                        lambda start: pd.Series([245.0] * 5, index=idx))
+    monkeypatch.setattr(sources, "fetch_yahoo_chart",
+                        lambda *a, **k: pytest.fail("不該呼叫 Yahoo"))
+
+    pre = sources.prefetch_aliases({"^TWOII": ["^TWOII"]}, "2026-01-01")
+    assert (pre["^TWOII"] == 245.0).all()
+    assert sources.ALIAS_SOURCE["^TWOII"] == "TPEx"
+
+
+def test_native_source_failure_falls_back_to_yahoo(monkeypatch):
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)
+
+    def boom(start):
+        raise RuntimeError("櫃買中心所有候選端點都取不到指數")
+
+    monkeypatch.setitem(sources.NATIVE_SOURCE, "^TWOII", boom)
+    monkeypatch.setattr(sources, "fetch_yahoo_chart",
+                        lambda sym, start="2005-01-01", retries=2:
+                        pd.Series([46.0] * 5, index=idx))
+    pre = sources.prefetch_aliases({"^TWOII": ["006201.TWO"]}, "2026-01-01")
+    assert (pre["^TWOII"] == 46.0).all()
