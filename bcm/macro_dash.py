@@ -717,4 +717,8 @@ def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
             f'<p class="sub2" style="margin:8px 0 0">'
             f'橫軸為天期，採等距排列。曲線整體上移＝殖利率全面走升；'
             f'短端上升快於長端＝平坦化；短端下降快於長端＝陡峭化。</p>'
+            f'<p class="sub2" style="margin:6px 0 0">'
+            f'圖上每個天期都是<b>財政部實際標售的證券</b>（1M–1Y 為國庫券，'
+            f'2Y–30Y 為附息債券），不是由鄰近天期內插而來。'
+            f'CMT 的擬合僅用於輸入點之間未輸出的天期（如 4Y、8Y）。</p>'
             f'{table}</div>')
