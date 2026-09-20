@@ -456,8 +456,9 @@ def test_balance_sheet_cards_show_readable_units():
     tga = macro_dash.metric_card(panel, "財政部TGA", "WTREGEN", "level", None)
     assert "十億美元" in tga
     # 變化量也要跟著換算，否則箭頭方向會和顯示值對不上
-    raw = panel["WTREGEN"]
-    expect = (raw.iloc[-1] - raw.iloc[-64]) * 1e-3
+    raw = panel["WTREGEN"].dropna()
+    base = raw.loc[:raw.index[-1] - pd.DateOffset(months=3)].iloc[-1]
+    expect = (raw.iloc[-1] - base) * 1e-3
     assert f"{expect:+,.2f}" in tga
     assert "▲" in tga                     # 上升，且與顯示值同號
 
@@ -508,3 +509,38 @@ def test_pct_mode_survives_short_history():
     long_idx = pd.bdate_range("2025-01-01", periods=400)
     long = pd.DataFrame({"X": np.linspace(100.0, 200.0, 400)}, index=long_idx)
     assert macro_dash.metric_series(long, "X", "pct").iloc[-1] < 20
+
+
+def test_price_mode_shows_level_not_return():
+    """指數卡片的主值要是點位，變化才是百分比。
+
+    先前用 pct 模式：主值是「近三個月報酬率」，變化欄則是
+    「報酬率相對三個月前的報酬率」—— 差分做了兩次，讀不出意思。
+    """
+    idx = pd.bdate_range("2025-01-01", periods=400)
+    panel = pd.DataFrame({"^GSPC": np.linspace(6000.0, 7650.5, 400)},
+                         index=idx)
+
+    html = macro_dash.metric_card(panel, "標普500", "^GSPC", "price", None)
+    assert "7,650.5" in html                 # 主值是點位
+    assert "%" in html                       # 變化是百分比
+    assert "pp" not in html                  # 不是百分點（那是比率的變化）
+
+    # 迷你圖畫的也要是點位本身
+    s = macro_dash.metric_series(panel, "^GSPC", "price")
+    assert s.iloc[-1] == panel["^GSPC"].iloc[-1]
+
+
+def test_price_ranking_uses_relative_change():
+    """指數點位要用相對變化排序，否則近期波動會被系統性誇大。
+
+    標普從 3,446 漲到 47,741，同樣「漲 300 點」在 1998 和 2026 意義完全不同。
+    """
+    idx = pd.bdate_range("2005-01-01", periods=2000)
+    # 指數型成長：絕對變化量隨水準放大，但相對變化維持穩定
+    s = pd.Series(1000 * np.exp(np.linspace(0, 2.5, 2000)), index=idx)
+
+    z_abs = macro_dash.change_zscore(s, relative=False)
+    z_rel = macro_dash.change_zscore(s, relative=True)
+    assert abs(z_rel) < abs(z_abs), "絕對變化量會把最近的漲幅誤判為異常"
+    assert abs(z_rel) < macro_dash.ANOMALY_Z, "穩定成長不該被標成異常"

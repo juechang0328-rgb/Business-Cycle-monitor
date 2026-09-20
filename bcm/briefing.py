@@ -33,7 +33,8 @@ def collect(panel: pd.DataFrame, cfg,
             snap = macro_dash.metric_snapshot(panel, code, mode)
             if not snap["ok"]:
                 continue
-            z = macro_dash.change_zscore(snap["series"])
+            z = macro_dash.change_zscore(snap["series"],
+                                         relative=mode == "price")
             if np.isnan(z):
                 continue
             movers.append({

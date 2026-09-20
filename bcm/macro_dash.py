@@ -72,7 +72,7 @@ def metric_series(panel: pd.DataFrame, code: str, mode: str) -> pd.Series:
         return (((panel[code] / base) ** 4 - 1) * 100).dropna()
     if mode == "pct":
         return _pct_over(panel[code], pd.DateOffset(months=3))
-    return s                                        # level
+    return s                                        # level / price
 
 
 def metric_snapshot(panel: pd.DataFrame, code: str, mode: str) -> dict:
@@ -80,10 +80,14 @@ def metric_snapshot(panel: pd.DataFrame, code: str, mode: str) -> dict:
     if s.empty:
         return {"ok": False}
     cur = float(s.iloc[-1])
-    # 變化基準：日頻序列比 3 個月前，低頻序列比前一個可得值
-    lookback = 63 if len(s) > 80 else max(len(s) // 4, 1)
-    if len(s) > lookback:
-        prev, base_date = float(s.iloc[-lookback - 1]), s.index[-lookback - 1]
+    # 變化基準用「三個月前的那一天」，不是「往回數 63 列」。
+    # 數列數會因為交易日多寡而漂移：台股與美股的交易日不重疊，同樣數 63 列
+    # 落到的日期就差好幾天，標籤寫「近3個月」卻不是真的三個月。
+    # 歷史不足三個月時退回序列第一筆，實際比較了多久由 span_days 據實回報。
+    target = s.index[-1] - pd.DateOffset(months=3)
+    earlier = s.loc[:target]
+    if len(earlier):
+        prev, base_date = float(earlier.iloc[-1]), earlier.index[-1]
     else:
         prev, base_date = float(s.iloc[0]), s.index[0]
     return {"ok": True, "series": s, "current": cur, "prev": prev,
@@ -211,12 +215,16 @@ def glossary_block(code: str) -> str:
             f'<dl>{body}</dl></div></details>')
 
 
-UNIT_BY_MODE = {"yoy": "%", "m3ann": "%", "pct": "%", "level": ""}
+# price：指數／價格。主值顯示點位本身，變化以 % 呈現。
+# 不用 pct 是因為 pct 會把「近三個月報酬率」當成主值，下面那行就變成
+# 「報酬率相對三個月前的報酬率」—— 差分做了兩次，沒人讀得懂。
+UNIT_BY_MODE = {"yoy": "%", "m3ann": "%", "pct": "%", "level": "", "price": ""}
 # 比率型指標的主值本身已是比率，其「變化」是比率的變化，單位為百分點，
 # 標籤必須與水準型區分，否則同一張卡上會出現兩個看似矛盾的百分比。
 CHANGE_LABEL = {"level": "近3個月", "yoy": "較3個月前",
-                "m3ann": "較3個月前", "pct": "較3個月前"}
-CHANGE_UNIT = {"level": "", "yoy": "pp", "m3ann": "pp", "pct": "pp"}
+                "m3ann": "較3個月前", "pct": "較3個月前", "price": "近3個月"}
+CHANGE_UNIT = {"level": "", "yoy": "pp", "m3ann": "pp", "pct": "pp",
+               "price": "%"}
 
 
 # 原始 FRED 序列的顯示單位換算。央行資產負債表各項以「百萬美元」發布，
@@ -245,7 +253,11 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
     spec = derived.DERIVED.get(code)
     cunit = CHANGE_UNIT.get(mode, "")
     raw_scale = SCALE_BY_CODE.get(code) if mode == "level" else None
-    if spec and mode == "level":
+    if mode == "price":
+        cur_disp = _fmt(cur)
+        pct = (cur / snap["prev"] - 1) * 100 if snap["prev"] else float("nan")
+        chg_disp = f"{pct:+,.2f}%"
+    elif spec and mode == "level":
         cur_disp = _fmt(cur * spec["scale"], spec["display_unit"])
         chg_disp = f'{chg*spec["scale"]:+,.2f}'
     elif raw_scale:
@@ -277,9 +289,12 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
     # 方向本身不帶好壞：VIX 與信用利差上升是壞事，用綠漲紅跌會傳達相反意思。
     # 因此變化值用中性色，只以箭頭表示方向，語意由門檻徽章承擔。
     # 依四捨五入後的顯示值判斷方向，避免出現「▲ +0.00」這種自相矛盾的組合
-    _sc = spec["scale"] if spec and mode == "level" else (
-        raw_scale[0] if raw_scale else 1)
-    shown_chg = round(chg * _sc, 2)
+    if mode == "price":
+        shown_chg = round(pct, 2)
+    else:
+        _sc = spec["scale"] if spec and mode == "level" else (
+            raw_scale[0] if raw_scale else 1)
+        shown_chg = round(chg * _sc, 2)
     arrow = "▲" if shown_chg > 0 else ("▼" if shown_chg < 0 else "—")
     badge = f'<span class="m-badge {lvl}">{_esc(note)}</span>' if note else ""
     return (
@@ -422,7 +437,8 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
         cards, n_anom = [], 0
         for it in ordered:
             snap = metric_snapshot(panel, it[1], it[2])
-            z = change_zscore(snap["series"]) if snap["ok"] else float("nan")
+            z = (change_zscore(snap["series"], relative=it[2] == "price")
+                 if snap["ok"] else float("nan"))
             if not np.isnan(z) and abs(z) >= ANOMALY_Z:
                 n_anom += 1
             cards.append(metric_card(panel, *it, zscore=z,
@@ -723,13 +739,22 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
 ANOMALY_Z = 2.0          # |z| 超過此值標示為異常
 
 
-def change_zscore(s: pd.Series, offset=None) -> float:
-    """本次變化在該序列歷史變化分布中的 z 分數。"""
+def change_zscore(s: pd.Series, offset=None, relative: bool = False) -> float:
+    """本次變化在該序列歷史變化分布中的 z 分數。
+
+    relative：改用百分比變化而非絕對變化。指數點位一定要開這個 ——
+    標普從 3,446 漲到 47,741，同樣「漲 300 點」在 1998 和 2026 意義天差地遠，
+    拿絕對變化量做 z 分數會系統性地把近期的波動誇大成異常。
+    """
     offset = offset or pd.DateOffset(months=3)
     if s.empty or len(s) < 60:
         return float("nan")
     base = _shift_by(s, offset)
-    diffs = (s - base).dropna()
+    if relative:
+        diffs = ((s / base - 1) * 100).replace(
+            [np.inf, -np.inf], np.nan).dropna()
+    else:
+        diffs = (s - base).dropna()
     if len(diffs) < 30:
         return float("nan")
     sd = diffs.std()
@@ -746,7 +771,8 @@ def rank_items(panel: pd.DataFrame, items: list[tuple]) -> list[tuple]:
     scored = []
     for it in items:
         snap = metric_snapshot(panel, it[1], it[2])
-        z = change_zscore(snap["series"]) if snap["ok"] else float("nan")
+        z = (change_zscore(snap["series"], relative=it[2] == "price")
+             if snap["ok"] else float("nan"))
         scored.append((it, z))
     return [it for it, _ in sorted(
         scored,

@@ -325,10 +325,13 @@ FIXED_ORDER_GROUPS = {"公債殖利率"}
 # mode：pct=百分比變化、diff=絕對差、level=水準值
 MACRO_GROUPS = [
     ("市場情緒", [
-        ("標普500",     "^GSPC",  "pct",   None),
-        ("納斯達克",    "^IXIC",  "pct",   None),
-        ("台灣加權指數", "^TWII",  "pct",   None),
-        ("櫃買OTC指數",   "^TWOII", "pct",   None),
+        # price：主值是指數點位，變化以 % 呈現。
+        # 用 pct 的話主值會變成「近三個月報酬率」，下面那行就成了
+        # 「報酬率相對三個月前的報酬率」，差分做兩次，讀不出意思。
+        ("標普500",     "^GSPC",  "price", None),
+        ("納斯達克",    "^IXIC",  "price", None),
+        ("台灣加權指數", "^TWII",  "price", None),
+        ("櫃買OTC指數",  "^TWOII", "price", None),
         ("VIX",         "^VIX",   "level", {"calm": 15, "stress": 25}),
     ]),
     ("景氣動能", [
