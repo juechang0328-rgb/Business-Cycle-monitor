@@ -31,13 +31,55 @@ PROJECTION_CODES = {"FEDTARMD"}
 # 而抓不到時 yfinance 只會安靜地回傳空欄位。因此對有疑慮的序列列出候選代號，
 # 一次全抓，取第一個真的有資料的，並把它更名為正式代號。
 TICKER_ALIASES = {
-    # 櫃買（OTC / TPEx）指數。已確認 Yahoo 沒有收錄這個指數本身
-    # （^TWOII／^TWO／^OTCI／TWOTCI／^TWOTCI 全部回報 possibly delisted），
-    # 因此退而求其次用在櫃買市場掛牌、追蹤櫃買成分的 ETF 當代理。
-    # 代理不等於指數：ETF 有追蹤誤差，而且 auto_adjust 會還原配息，
-    # 因此長期累積報酬會高於價格指數；看「近三個月變化」影響不大。
+    # 櫃買（OTC / TPEx）指數。^TWOII 是 Yahoo 台股站上櫃買指數的代號，
+    # 但 yfinance 的下載路徑會先查 quoteSummary 取時區，這一步對它會失敗
+    # （回報 possibly delisted; no timezone found），於是整欄安靜地變成空的。
+    # 注意它和 ^TWO／^OTCI 不同 —— 那兩個是真的查無此標的（明確 404）。
+    # 因此保留 ^TWOII 為第一順位，由 chart API 直接補抓（見 fetch_yahoo_chart），
+    # 真的都失敗時才退到櫃買市場掛牌的 ETF 當代理。
     "^TWOII": ["^TWOII", "006201.TWO", "6201.TWO"],
 }
+
+
+def fetch_yahoo_chart(symbol: str, start: str = "2005-01-01",
+                      timeout: int = 20) -> pd.Series:
+    """繞過 yfinance，直接打 Yahoo 的 chart 端點取收盤價。
+
+    存在的理由：yfinance 下載前會先查 quoteSummary 拿時區，那一步對某些
+    指數（例如櫃買 ^TWOII）會失敗，於是整欄變成空的 —— 但 chart 端點本身
+    是有資料的。少了這條路就只能改用 ETF 代理，失去真正的指數。
+    """
+    import json
+    import urllib.parse
+    import urllib.request
+
+    p1 = int(pd.Timestamp(start).timestamp())
+    p2 = int(pd.Timestamp.today().normalize().timestamp()) + 86400
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+           f"{urllib.parse.quote(symbol)}"
+           f"?period1={p1}&period2={p2}&interval=1d")
+    req = urllib.request.Request(url, headers={
+        # 預設的 Python-urllib UA 會被 Yahoo 擋掉
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    res = (data.get("chart") or {}).get("result") or []
+    if not res:
+        raise RuntimeError((data.get("chart") or {}).get("error") or "無資料")
+    node = res[0]
+    ts = node.get("timestamp") or []
+    quote = ((node.get("indicators") or {}).get("quote") or [{}])[0]
+    adj = ((node.get("indicators") or {}).get("adjclose") or [{}])[0]
+    vals = adj.get("adjclose") or quote.get("close") or []
+    if not ts or not vals:
+        raise RuntimeError("chart 端點沒有收盤價")
+    s = pd.Series(vals, index=pd.to_datetime(ts, unit="s"), dtype="float64")
+    # 指數以當地時間報價，只取日期即可；同日多筆取最後一筆
+    s.index = s.index.normalize()
+    return s[~s.index.duplicated(keep="last")].dropna().sort_index()
 
 
 def resolve_aliases(tickers: Iterable[str]) -> tuple[list[str], dict[str, list[str]]]:
@@ -53,24 +95,71 @@ def resolve_aliases(tickers: Iterable[str]) -> tuple[list[str], dict[str, list[s
     return out, alias
 
 
-def pick_alias(close: pd.DataFrame, alias: dict[str, list[str]]) -> pd.DataFrame:
-    """每組候選代號取第一個有資料者，更名為正式代號，其餘候選欄位丟掉。"""
+def pick_alias(close: pd.DataFrame,
+               alias: dict[str, list[str]]) -> tuple[pd.DataFrame, dict[str, int]]:
+    """每組候選代號取第一個有資料者，更名為正式代號，其餘候選欄位丟掉。
+
+    同時回傳每組「選到第幾順位」，讓後續的 chart 端點只去補更高順位的代號 ——
+    否則第一順位（真正的指數）永遠不會被重試，會被較低順位的代理搶走。
+    """
+    chosen: dict[str, int] = {}
     for canon, cands in alias.items():
-        winner = next((c for c in cands
-                       if c in close.columns and close[c].notna().any()), None)
-        # 必須先丟掉落選欄位再更名：否則把 ^TWO 更名為 ^TWOII 會和原本那個
-        # 空的 ^TWOII 欄撞名，接著的 drop 會把兩欄一起刪掉，資料又沒了。
+        rank = next((i for i, c in enumerate(cands)
+                     if c in close.columns and close[c].notna().any()), None)
+        winner = cands[rank] if rank is not None else None
+        # 必須先丟掉落選欄位再更名：否則把候選更名為正式代號會和原本那個
+        # 空的同名欄撞名，接著的 drop 會把兩欄一起刪掉，資料又沒了。
         drop = [c for c in cands if c in close.columns and c != winner]
         if drop:
             close = close.drop(columns=drop)
         if winner is None:
-            print(f"  ⚠ Yahoo：{canon} 的候選代號全部抓不到資料"
-                  f"（試過 {'、'.join(cands)}）")
             if canon not in close.columns:
                 close[canon] = float("nan")
-        elif winner != canon:
-            print(f"  Yahoo：{canon} 改用代號 {winner}")
-            close = close.rename(columns={winner: canon})
+        else:
+            chosen[canon] = rank
+            if winner != canon:
+                close = close.rename(columns={winner: canon})
+    return close, chosen
+
+
+def fill_missing_via_chart(close: pd.DataFrame, alias: dict[str, list[str]],
+                           start: str,
+                           chosen: dict[str, int] | None = None) -> pd.DataFrame:
+    """用 chart 端點補抓 yfinance 漏掉的代號。
+
+    yfinance 下載前會先查 quoteSummary 拿時區，那一步對某些指數會失敗，
+    整欄於是安靜地變成空的。只要 chart 端點有資料就能救回來。
+
+    `chosen` 是 pick_alias 選到的順位：只重試比它更前面的候選，
+    這樣真正的指數才有機會蓋過備援的 ETF 代理。
+    """
+    chosen = chosen or {}
+    for canon, cands in alias.items():
+        rank = chosen.get(canon)
+        retry = cands if rank is None else cands[:rank]
+        if not retry:
+            continue
+        for c in retry:
+            try:
+                s = fetch_yahoo_chart(c, start=start)
+            except Exception as e:
+                print(f"  · chart 端點 {c} 失敗：{e}")
+                continue
+            if s.empty:
+                continue
+            # 台股交易日與美股不完全重疊，索引取聯集才不會把資料切掉
+            close = close.reindex(close.index.union(s.index))
+            close[canon] = s.reindex(close.index)
+            print(f"  Yahoo：{canon} 由 chart 端點取得"
+                  f"（代號 {c}，{len(s)} 筆，起自 {s.index[0].date()}）")
+            break
+        else:
+            if rank is None:
+                print(f"  ⚠ Yahoo：{canon} 的候選代號全部抓不到資料"
+                      f"（試過 {'、'.join(cands)}）")
+            elif rank > 0:
+                print(f"  Yahoo：{canon} 改用代號 {cands[rank]}"
+                      f"（較前順位皆無資料）")
     return close
 
 
@@ -91,7 +180,8 @@ def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
             if isinstance(close, pd.Series):
                 close = close.to_frame(tickers[0])
             close.columns = [str(c) for c in close.columns]
-            return pick_alias(close.sort_index(), alias)
+            close, chosen = pick_alias(close.sort_index(), alias)
+            return fill_missing_via_chart(close, alias, start, chosen)
         except Exception as e:  # 網路波動時退避重試
             last_err = e
             if attempt < retries - 1:

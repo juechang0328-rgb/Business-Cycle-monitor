@@ -479,11 +479,85 @@ def test_ticker_alias_picks_first_with_data():
     close = pd.DataFrame({c: np.nan for c in cands}, index=idx)
     close["^GSPC"] = 1.0
     close[cands[1]] = 220.0                    # 第一順位沒資料、第二順位有
-    out = pick_alias(close, alias)
+    out, chosen = pick_alias(close, alias)
     assert set(out.columns) == {"^GSPC", "^TWOII"}   # 候選欄位已收斂
     assert (out["^TWOII"] == 220.0).all()            # 取到有資料的那個
+    assert chosen["^TWOII"] == 1                     # 記下選到第幾順位
 
     # 全部抓不到時不得拋錯，欄位留著（後續健康檢查會標記無資料）
     empty = pd.DataFrame({c: np.nan for c in cands}, index=idx)
-    out2 = pick_alias(empty, alias)
+    out2, chosen2 = pick_alias(empty, alias)
     assert "^TWOII" in out2.columns and out2["^TWOII"].isna().all()
+    assert "^TWOII" not in chosen2
+
+
+def test_chart_endpoint_fills_series_yfinance_missed(monkeypatch):
+    """yfinance 查不到時區就會讓整欄變空 —— chart 端點要能把它補回來。"""
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)          # 美股交易日
+    close = pd.DataFrame({"^GSPC": 1.0, "^TWOII": np.nan}, index=idx)
+    alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
+
+    calls = []
+
+    def fake(symbol, start="2005-01-01", timeout=20):
+        calls.append(symbol)
+        if symbol != "^TWOII":
+            raise RuntimeError("不該走到代理")
+        # 台股有一天是美股休市日，索引必須取聯集才不會被切掉
+        tw = pd.to_datetime(["2026-01-05", "2026-01-06", "2026-01-07",
+                             "2026-01-08", "2026-01-09", "2026-01-12"])
+        return pd.Series([200.0, 201, 202, 203, 204, 205], index=tw)
+
+    monkeypatch.setattr(sources, "fetch_yahoo_chart", fake)
+    out = sources.fill_missing_via_chart(close, alias, "2026-01-01")
+
+    assert calls == ["^TWOII"]                     # 第一順位就成功，不試代理
+    assert out["^TWOII"].notna().sum() == 6
+    assert pd.Timestamp("2026-01-12") in out.index  # 索引擴充，資料沒被切掉
+    assert out.loc[pd.Timestamp("2026-01-05"), "^GSPC"] == 1.0
+
+    # 已經選到第一順位時不該再打網路
+    calls.clear()
+    sources.fill_missing_via_chart(out, alias, "2026-01-01", {"^TWOII": 0})
+    assert calls == []
+
+
+def test_chart_endpoint_falls_back_to_next_candidate(monkeypatch):
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)
+    close = pd.DataFrame({"^TWOII": np.nan}, index=idx)
+    alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
+
+    def fake(symbol, start="2005-01-01", timeout=20):
+        if symbol == "^TWOII":
+            raise RuntimeError("chart 端點沒有收盤價")
+        return pd.Series([46.0] * 5, index=idx)
+
+    monkeypatch.setattr(sources, "fetch_yahoo_chart", fake)
+    out = sources.fill_missing_via_chart(close, alias, "2026-01-01")
+    assert (out["^TWOII"] == 46.0).all()
+
+
+def test_chart_endpoint_outranks_fallback_proxy(monkeypatch):
+    """yfinance 只抓到備援代理時，仍要再試一次真正的指數。
+
+    否則第一順位（櫃買指數本身）永遠不會被重試 —— yfinance 一旦抓到
+    ETF 代理就算「有資料」，真正的指數就被靜靜地換掉了。
+    """
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)
+    close = pd.DataFrame({"^TWOII": 46.0}, index=idx)     # 已是代理的資料
+    alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
+
+    def fake(symbol, start="2005-01-01", timeout=20):
+        assert symbol == "^TWOII", "不該重試比選中順位更後面的候選"
+        return pd.Series([200.0] * 5, index=idx)
+
+    monkeypatch.setattr(sources, "fetch_yahoo_chart", fake)
+    out = sources.fill_missing_via_chart(close, alias, "2026-01-01",
+                                         {"^TWOII": 1})
+    assert (out["^TWOII"] == 200.0).all()                # 指數蓋過代理
