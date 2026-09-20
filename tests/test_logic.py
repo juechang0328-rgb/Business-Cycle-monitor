@@ -467,21 +467,23 @@ def test_panel_attrs_survive_concat():
 
 def test_ticker_alias_picks_first_with_data():
     """Yahoo 指數代號不穩定，抓不到時 yfinance 只會安靜回傳空欄位。"""
-    from bcm.sources import pick_alias, resolve_aliases
+    from bcm.sources import TICKER_ALIASES, pick_alias, resolve_aliases
 
     want, alias = resolve_aliases(["^GSPC", "^TWOII"])
-    assert want[0] == "^GSPC" and "^TWOII" in want and len(want) > 2
-    assert alias["^TWOII"][0] == "^TWOII"
+    assert want[0] == "^GSPC"
+    assert alias["^TWOII"] == TICKER_ALIASES["^TWOII"]
+    assert all(c in want for c in alias["^TWOII"])
 
+    cands = alias["^TWOII"]
     idx = pd.bdate_range("2026-01-01", periods=5)
-    close = pd.DataFrame({"^GSPC": 1.0, "^TWOII": np.nan, "^TWO": 220.0,
-                          "^OTCI": np.nan, "TWOTCI": np.nan, "^TWOTCI": np.nan},
-                         index=idx)
+    close = pd.DataFrame({c: np.nan for c in cands}, index=idx)
+    close["^GSPC"] = 1.0
+    close[cands[1]] = 220.0                    # 第一順位沒資料、第二順位有
     out = pick_alias(close, alias)
-    assert list(out.columns) == ["^GSPC", "^TWOII"]      # 候選欄位已收斂
-    assert (out["^TWOII"] == 220.0).all()                # 取到有資料的那個
+    assert set(out.columns) == {"^GSPC", "^TWOII"}   # 候選欄位已收斂
+    assert (out["^TWOII"] == 220.0).all()            # 取到有資料的那個
 
     # 全部抓不到時不得拋錯，欄位留著（後續健康檢查會標記無資料）
-    empty = pd.DataFrame({c: np.nan for c in alias["^TWOII"]}, index=idx)
+    empty = pd.DataFrame({c: np.nan for c in cands}, index=idx)
     out2 = pick_alias(empty, alias)
     assert "^TWOII" in out2.columns and out2["^TWOII"].isna().all()

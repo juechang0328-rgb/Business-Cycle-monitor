@@ -31,8 +31,12 @@ PROJECTION_CODES = {"FEDTARMD"}
 # 而抓不到時 yfinance 只會安靜地回傳空欄位。因此對有疑慮的序列列出候選代號，
 # 一次全抓，取第一個真的有資料的，並把它更名為正式代號。
 TICKER_ALIASES = {
-    # 櫃買（OTC / TPEx）指數
-    "^TWOII": ["^TWOII", "^TWO", "^OTCI", "TWOTCI", "^TWOTCI"],
+    # 櫃買（OTC / TPEx）指數。已確認 Yahoo 沒有收錄這個指數本身
+    # （^TWOII／^TWO／^OTCI／TWOTCI／^TWOTCI 全部回報 possibly delisted），
+    # 因此退而求其次用在櫃買市場掛牌、追蹤櫃買成分的 ETF 當代理。
+    # 代理不等於指數：ETF 有追蹤誤差，而且 auto_adjust 會還原配息，
+    # 因此長期累積報酬會高於價格指數；看「近三個月變化」影響不大。
+    "^TWOII": ["^TWOII", "006201.TWO", "6201.TWO"],
 }
 
 
