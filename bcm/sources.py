@@ -172,9 +172,9 @@ TPEX_ENDPOINTS = [
     ("tpex-www-dailyIndex",
      "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyIndex"
      "?date={ymd}&response=json"),
-    # OpenAPI：當日收盤指數
+    # OpenAPI：櫃買指數（資料集名稱由站方 swagger 目錄確認）
     ("tpex-openapi-index",
-     "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_index"),
+     "https://www.tpex.org.tw/openapi/v1/tpex_index"),
     # 舊版：整月每日指數（民國年/月）
     ("tpex-st42",
      "https://www.tpex.org.tw/web/stock/aftertrading/daily_index/"
@@ -233,7 +233,12 @@ TPEX_CATALOGS = [
 
 
 def discover_tpex_index_paths() -> list[str]:
-    """從 OpenAPI 目錄找出可能是「指數」的資料集路徑。"""
+    """從 OpenAPI 目錄找出可能是「指數」的資料集完整網址。
+
+    一定要把目錄宣告的 basePath／servers 接回去。第一版直接用
+    "https://www.tpex.org.tw/openapi" + "/tpex_index"，漏掉了 /v1，
+    結果 21 個候選全部打到站方的 404 頁 —— 目錄讀對了，網址卻組錯。
+    """
     for cat in TPEX_CATALOGS:
         code, obj, peek = _http_json(cat)
         if not isinstance(obj, dict):
@@ -242,11 +247,23 @@ def discover_tpex_index_paths() -> list[str]:
         paths = obj.get("paths")
         if not isinstance(paths, dict):
             continue
+        base = obj.get("basePath")                      # Swagger 2.0
+        if not base:                                    # OpenAPI 3
+            servers = obj.get("servers") or []
+            base = servers[0].get("url") if servers else None
+        base = (base or "/openapi/v1").rstrip("/")
+        if base.startswith("http"):
+            root = base
+        else:
+            root = "https://www.tpex.org.tw" + (
+                base if base.startswith("/") else "/" + base)
         hits = [p for p in paths
                 if "index" in p.lower() or "指數" in str(paths[p])]
-        print(f"  TPEx 目錄共 {len(paths)} 個資料集，"
-              f"疑似指數的有 {len(hits)} 個：{hits[:8]}")
-        return hits
+        # 名稱剛好是「櫃買指數」的排前面，避免先去試成分股、報酬指數
+        hits.sort(key=lambda p: (p.strip("/") != "tpex_index", len(p)))
+        print(f"  TPEx 目錄共 {len(paths)} 個資料集（base={base}），"
+              f"疑似指數的有 {len(hits)} 個：{hits[:6]}")
+        return [root + (p if p.startswith("/") else "/" + p) for p in hits]
     return []
 
 
@@ -275,12 +292,10 @@ def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
             print(f"  TPEx：櫃買指數取自 {name}（{len(got)} 筆）")
             return got.loc[start:]
 
-    for path in discover_tpex_index_paths():
-        url = "https://www.tpex.org.tw/openapi" + path \
-            if path.startswith("/") else path
-        got = attempt(f"openapi{path}", url)
+    for url in discover_tpex_index_paths():
+        got = attempt(url.rsplit("/", 1)[-1], url)
         if got is not None:
-            print(f"  TPEx：櫃買指數取自 {path}（{len(got)} 筆）")
+            print(f"  TPEx：櫃買指數取自 {url}（{len(got)} 筆）")
             return got.loc[start:]
 
     raise RuntimeError("櫃買中心所有候選端點都取不到指數")

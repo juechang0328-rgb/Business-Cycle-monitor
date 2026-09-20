@@ -735,3 +735,36 @@ def test_native_source_failure_falls_back_to_yahoo(monkeypatch):
                         pd.Series([46.0] * 5, index=idx))
     pre = sources.prefetch_aliases({"^TWOII": ["006201.TWO"]}, "2026-01-01")
     assert (pre["^TWOII"] == 46.0).all()
+
+
+def test_discover_uses_catalog_basepath(monkeypatch):
+    """目錄讀對了，網址還是可能組錯。
+
+    第一版直接用 ".../openapi" + "/tpex_index"，漏掉目錄宣告的 /v1，
+    21 個候選全部打到站方的 404 頁。
+    """
+    from bcm import sources
+
+    spec = {"basePath": "/openapi/v1",
+            "paths": {"/tpex_index_consti": {"get": {"summary": "成分股"}},
+                      "/tpex_index": {"get": {"summary": "櫃買指數"}},
+                      "/tpex_stock_quotes": {"get": {"summary": "個股"}}}}
+    monkeypatch.setattr(sources, "_http_json",
+                        lambda url, timeout=20: (200, spec, ""))
+    urls = sources.discover_tpex_index_paths()
+
+    assert urls[0] == "https://www.tpex.org.tw/openapi/v1/tpex_index", \
+        "basePath 要接回去，且櫃買指數本身要排第一"
+    assert all(u.startswith("https://www.tpex.org.tw/openapi/v1/") for u in urls)
+    assert not any("tpex_stock_quotes" in u for u in urls)
+
+
+def test_discover_handles_openapi3_servers(monkeypatch):
+    from bcm import sources
+
+    spec = {"servers": [{"url": "https://www.tpex.org.tw/openapi/v1"}],
+            "paths": {"/tpex_index": {"get": {"summary": "櫃買指數"}}}}
+    monkeypatch.setattr(sources, "_http_json",
+                        lambda url, timeout=20: (200, spec, ""))
+    assert sources.discover_tpex_index_paths() == [
+        "https://www.tpex.org.tw/openapi/v1/tpex_index"]
