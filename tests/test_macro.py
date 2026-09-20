@@ -544,3 +544,45 @@ def test_price_ranking_uses_relative_change():
     z_rel = macro_dash.change_zscore(s, relative=True)
     assert abs(z_rel) < abs(z_abs), "絕對變化量會把最近的漲幅誤判為異常"
     assert abs(z_rel) < macro_dash.ANOMALY_Z, "穩定成長不該被標成異常"
+
+
+def test_dormant_indicator_sinks_to_the_bottom():
+    """「變化大」不等於「有意義」。
+
+    Sahm Rule 離觸發門檻還有 0.57pp 時，往上往下動都不代表任何事，
+    不該因為 |z| 大就佔走版面最好的位置。
+    """
+    idx = pd.bdate_range("2020-01-01", periods=1600)
+    rng = np.random.default_rng(3)
+    panel = pd.DataFrame({
+        # Sahm Rule 遠低於門檻，但最後一段劇烈下滑（|z| 會很大）
+        "SAHMREALTIME": np.r_[rng.normal(0, .02, 1500) + 0.30,
+                              np.linspace(0.30, -0.07, 100)],
+        "VIXX": rng.normal(16, 1.0, 1600),
+    }, index=idx)
+    items = [("Sahm Rule", "SAHMREALTIME", "level", {"warn": 0.50}),
+             ("VIX", "VIXX", "level", {"calm": 15, "stress": 25})]
+
+    assert macro_dash.is_dormant("SAHMREALTIME", {"warn": 0.50}, -0.07)
+    ordered = macro_dash.rank_items(panel, items)
+    assert ordered[-1][1] == "SAHMREALTIME", "沒有判讀意義的要沉到最後"
+
+    # 一旦逼近門檻就恢復正常參與排序
+    assert not macro_dash.is_dormant("SAHMREALTIME", {"warn": 0.50}, 0.45)
+    assert not macro_dash.is_dormant("SAHMREALTIME", {"warn": 0.50}, 0.60)
+    # 沒有列在 ONE_SIDED 的指標不受影響（兩個方向都有訊息）
+    assert not macro_dash.is_dormant("BAMLH0A0HYM2", {"calm": 3.0}, 2.5)
+
+
+def test_dormant_indicator_not_counted_as_anomaly():
+    """標題掛著「變化異常」、點開是離門檻很遠的 Sahm Rule，會磨掉警告的可信度。"""
+    idx = pd.bdate_range("2020-01-01", periods=1600)
+    rng = np.random.default_rng(5)
+    panel = pd.DataFrame({
+        "SAHMREALTIME": np.r_[rng.normal(0, .02, 1500) + 0.30,
+                              np.linspace(0.30, -0.07, 100)],
+    }, index=idx)
+    groups = [("景氣動能",
+               [("Sahm Rule", "SAHMREALTIME", "level", {"warn": 0.50})])]
+    html = macro_dash.groups_html(panel, groups)
+    assert "變化異常" not in html

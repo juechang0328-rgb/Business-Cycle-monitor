@@ -33,6 +33,10 @@ def collect(panel: pd.DataFrame, cfg,
             snap = macro_dash.metric_snapshot(panel, code, mode)
             if not snap["ok"]:
                 continue
+            # 沒有判讀意義的指標不進「變化最不尋常」的名單：
+            # 卡片已經把它排到後面了，摘要再把它拉上來只會自相矛盾
+            if macro_dash.is_dormant(code, th, snap["current"]):
+                continue
             z = macro_dash.change_zscore(snap["series"],
                                          relative=mode == "price")
             if np.isnan(z):

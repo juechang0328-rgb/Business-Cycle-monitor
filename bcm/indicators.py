@@ -216,6 +216,12 @@ MACRO_YAHOO = [
     # 兩者的交易時段與美股不重疊，因此最新值通常比美股指數早一個日曆日。
     "^TWII", "^TWOII",
     "ZQ=F",   # 30 天期 Fed Funds 期貨（隱含利率 = 100 − 價格）
+    # 資金流向比值用的 ETF（相對強弱，見 bcm/derived.py 的 RATIO_* 系列）
+    "SPY",    # 標普500（市值加權）
+    "RSP",    # 標普500 等權重 —— 與 SPY 的比值是市場廣度
+    "IWM",    # 羅素2000 小型股
+    "HYG",    # 高收益債
+    "LQD",    # 投資級公司債
     # 能源
     "BZ=F",   # 布蘭特原油（CL=F 是西德州 WTI，兩者價差反映運輸與品質差異）
     "NG=F",   # 天然氣
@@ -281,6 +287,11 @@ MACRO_HEALTH = [
     ("VIX",             "^VIX",         "daily"),
     ("標普500",         "^GSPC",        "daily"),
     ("納斯達克",        "^IXIC",        "daily"),
+    ("SPY",             "SPY",          "daily"),
+    ("RSP",             "RSP",          "daily"),
+    ("IWM",             "IWM",          "daily"),
+    ("HYG",             "HYG",          "daily"),
+    ("LQD",             "LQD",          "daily"),
     ("台灣加權指數",    "^TWII",        "daily"),
     ("櫃買OTC指數",     "^TWOII",       "daily"),
     ("政策利率上限",    "DFEDTARU",     "daily"),
@@ -319,20 +330,33 @@ MACRO_HEALTH = [
 
 # 這些區塊維持宣告順序，不依變化幅度重排 ——
 # 天期順序本身就是資訊，打亂後曲線形狀就讀不出來了。
-FIXED_ORDER_GROUPS = {"公債殖利率"}
+FIXED_ORDER_GROUPS = {"公債殖利率", "市場情緒", "資金流向"}
 
 # 儀表板分組：(區塊標題, [(顯示名稱, 代碼, 呈現方式, 門檻或說明)])
 # mode：pct=百分比變化、diff=絕對差、level=水準值
 MACRO_GROUPS = [
     ("市場情緒", [
+        # 這一區固定順序（見 FIXED_ORDER_GROUPS）：先看波動、再看美股、
+        # 最後看台股，每天位置一樣才好比對。
         # price：主值是指數點位，變化以 % 呈現。
         # 用 pct 的話主值會變成「近三個月報酬率」，下面那行就成了
         # 「報酬率相對三個月前的報酬率」，差分做兩次，讀不出意思。
+        ("VIX",         "^VIX",   "level", {"calm": 15, "stress": 25}),
         ("標普500",     "^GSPC",  "price", None),
         ("納斯達克",    "^IXIC",  "price", None),
         ("台灣加權指數", "^TWII",  "price", None),
         ("櫃買OTC指數",  "^TWOII", "price", None),
-        ("VIX",         "^VIX",   "level", {"calm": 15, "stress": 25}),
+    ]),
+    ("資金流向", [
+        # 全是「A／B 的比值」。比值的絕對水準沒有意義，看的是走勢方向：
+        # 上升代表資金往分子那一端流。這一區同樣固定順序，由「風險偏好」
+        # 到「市場結構」排列。
+        ("小型股／大型股",   "RATIO_SMALL_LARGE", "price", None),
+        ("納斯達克／標普",   "RATIO_NDX_SPX",     "price", None),
+        ("櫃買／加權",       "RATIO_OTC_TWSE",    "price", None),
+        ("高收益債／投資級", "RATIO_HY_IG",       "price", None),
+        ("循環股／防禦股",   "RATIO_CYC_DEF",     "price", None),
+        ("等權重／市值加權", "RATIO_BREADTH",     "price", None),
     ]),
     ("景氣動能", [
         ("工業生產年增", "INDPRO",       "yoy",   None),

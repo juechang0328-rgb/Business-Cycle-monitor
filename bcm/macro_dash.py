@@ -419,7 +419,15 @@ GROUP_NOTES = {
         "<b>SOFR−IORB</b> 與<b>銀行準備金</b> —— 前者持續轉正代表準備金已經稀缺，"
         "Fed 就得停止縮表。其餘幾項是拆解用的零件。",
     "市場情緒":
-        "台股與美股交易時段不重疊，台股的最新值通常比美股早一個日曆日。",
+        "台股與美股交易時段不重疊，台股的最新值通常比美股早一個日曆日。"
+        "這一區<b>固定順序</b>，不依變化幅度重排 —— 每天位置一樣才好比對。",
+    "資金流向":
+        "全部是<b>比值</b>（A÷B），回答的是「錢往哪邊跑」，不是「會漲還是會跌」。"
+        "比值的絕對數字沒有意義，看的是<b>方向</b>與相對自己歷史的位置："
+        "上升代表資金往分子那一端流。相除之後兩邊共同的因素（大盤漲跌、"
+        "利率水準）大致抵銷，剩下的才是資金偏好的變化。"
+        "<br>這些是<b>同期描述</b>，不是領先指標。本專案已經實測過景氣階段模型"
+        "對未來報酬沒有預測力，這一區同樣不該拿來擇時。",
 }
 
 
@@ -439,7 +447,10 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
             snap = metric_snapshot(panel, it[1], it[2])
             z = (change_zscore(snap["series"], relative=it[2] == "price")
                  if snap["ok"] else float("nan"))
-            if not np.isnan(z) and abs(z) >= ANOMALY_Z:
+            # 沒有判讀意義的指標不計入「變化異常」：標題掛著警告、
+            # 點開卻發現是離門檻還很遠的 Sahm Rule，只會磨掉警告的可信度
+            dormant = snap["ok"] and is_dormant(it[1], it[3], snap["current"])
+            if not np.isnan(z) and abs(z) >= ANOMALY_Z and not dormant:
                 n_anom += 1
             cards.append(metric_card(panel, *it, zscore=z,
                                      last_obs=lo.get(it[1])))
@@ -600,6 +611,12 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
  line-height:1.7;border-left:2px solid var(--line);padding-left:10px}
 .zchip{margin-left:6px;font-size:10.5px;color:var(--warn);
  border:1px solid currentColor;border-radius:99px;padding:0 5px;white-space:nowrap}
+/* 殖利率曲線圖。先前 .chart／.tick／.grid 完全沒有規則，SVG 的 <text>
+   沒指定 fill 就預設黑色 —— 淺色模式剛好看起來正常，深色模式下座標軸
+   等於消失在背景裡。這類「只有一半模式會壞」的缺漏最容易漏掉。 */
+.chart{width:100%;height:auto;display:block}
+.tick{fill:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+.grid{stroke:var(--line);stroke-width:1}
 .curve-lab{font-size:11.5px;font-weight:700}
 .policy-band{fill:var(--band);opacity:var(--band-op)}
 .policy-lab{font-size:10.5px;fill:var(--muted)}
@@ -705,9 +722,10 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
   用途是<b>描述現在市場在發生什麼</b>，不是預測。每張卡片顯示最新值、近三個月變化、
   近 12 個月走勢，以及（若適用）關鍵門檻位置。走勢線一律使用中性色 ——
   上升不等於是好事，例如 VIX 與信用利差走高代表風險升高。
-  <br>區塊內的<b>排序依據是「這次的三個月變化相對於該指標自己的歷史變化有多極端」</b>
-  （變化量的 z 分數），不是重要程度，也<b>不分方向</b> —— 排在前面只代表「動得不尋常」，
-  可能是好事也可能是壞事，甚至可能沒有意義（例如 Sahm Rule 往下掉）。
+  <br>區塊內先看<b>這個變化有沒有判讀意義</b>，再看<b>變化有多極端</b>
+  （變化量相對該指標自己歷史變化分布的 z 分數）。單向指標離門檻還很遠時
+  （例如 Sahm Rule 距觸發 0.50 尚有一段），它往哪動都不代表事情，會被排到後面，
+  也不計入「變化異常」。排在前面<b>不分方向</b>，只代表動得不尋常，可能是好事也可能是壞事。
   公債殖利率區塊例外，固定依天期排列。
 </p>
 {demo_banner}
@@ -763,20 +781,52 @@ def change_zscore(s: pd.Series, offset=None, relative: bool = False) -> float:
     return float((diffs.iloc[-1] - diffs.mean()) / sd)
 
 
-def rank_items(panel: pd.DataFrame, items: list[tuple]) -> list[tuple]:
-    """區塊內依變化的極端程度排序，最不尋常的排最前面。
+# 只有單向移動才帶有訊息的指標。
+# {代碼: (有意義的方向, 門檻鍵, 安全邊距)}，方向 +1 表示「上升越過門檻」才算事件。
+#
+# 為什麼需要這張表：排序是依變化量的 z 分數，但「變化大」不等於「有意義」。
+# Sahm Rule 現值 −0.07、離觸發門檻 0.50 還有 0.57pp，這種距離下它往上往下
+# 動都不代表任何事 —— 它的公式是「與前 12 個月最低值的差」，失業率創新低時
+# 分母會被重設，負得更多完全不是好消息也不是壞消息。可是它的 |z| 很容易偏大，
+# 結果版面最好的位置被一個根本不需要看的指標佔走。
+#
+# 要新增項目請確認它真的是單向的：例如高收益債利差、核心PCE 兩個方向都有
+# 訊息，就不該放進來。
+ONE_SIDED = {
+    "SAHMREALTIME": (+1, "warn", 0.20),
+}
 
-    取不到值的指標一律沉到最後，避免缺料卡佔據視線焦點。
+
+def is_dormant(code: str, th: dict | None, current: float) -> bool:
+    """目前的變化是否不具判讀意義（單向指標且離門檻還很遠）。"""
+    spec = ONE_SIDED.get(code)
+    if not spec or not th:
+        return False
+    sign, key, margin = spec
+    limit = th.get(key)
+    if limit is None or current is None or np.isnan(current):
+        return False
+    gap = (limit - current) if sign > 0 else (current - limit)
+    return gap > margin
+
+
+def rank_items(panel: pd.DataFrame, items: list[tuple]) -> list[tuple]:
+    """區塊內排序：先看「這個變化有沒有判讀意義」，再看變化有多極端。
+
+    只用 |z| 排序會把「動得大但不代表任何事」的指標推到最前面，
+    所以先分層：有意義的在前、暫時沒有判讀意義的沉到後面、取不到值的最後。
     """
     scored = []
     for it in items:
-        snap = metric_snapshot(panel, it[1], it[2])
-        z = (change_zscore(snap["series"], relative=it[2] == "price")
-             if snap["ok"] else float("nan"))
-        scored.append((it, z))
-    return [it for it, _ in sorted(
-        scored,
-        key=lambda t: (-abs(t[1]) if not np.isnan(t[1]) else 1e9, ))]
+        name, code, mode, th = it
+        snap = metric_snapshot(panel, code, mode)
+        if not snap["ok"]:
+            scored.append((it, 2, 0.0))
+            continue
+        z = change_zscore(snap["series"], relative=mode == "price")
+        tier = 1 if is_dormant(code, th, snap["current"]) else 0
+        scored.append((it, tier, 0.0 if np.isnan(z) else abs(z)))
+    return [it for it, _, _ in sorted(scored, key=lambda t: (t[1], -t[2]))]
 
 
 # ----------------------------------------------------------- 殖利率曲線圖
