@@ -11,7 +11,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from . import derived, glossary, health
+from . import briefing, derived, glossary, health
 
 
 def _esc(t) -> str:
@@ -433,6 +433,17 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
 .lede{color:var(--muted);font-size:13.5px;margin:0 0 18px;max-width:80ch}
 
 /* 健康檢查 */
+.brief{background:var(--panel);border:1px solid var(--line);
+ border-left:5px solid var(--accent);border-radius:12px;
+ padding:15px 18px 13px;margin-bottom:18px}
+.brief-head{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}
+.brief-title{font-weight:700;font-size:15px}
+.brief-date{color:var(--muted);font-size:12px}
+.brief-list{margin:0;padding-left:19px;font-size:13.5px;line-height:1.75}
+.brief-list li{margin-bottom:5px}
+.brief-list b{color:var(--ink)}
+.brief-foot{margin:10px 0 0;padding-top:9px;border-top:1px solid var(--line);
+ font-size:11.5px;color:var(--muted);line-height:1.65}
 .health{border:1px solid var(--line);border-radius:12px;background:var(--panel);
  margin-bottom:22px;border-left:5px solid var(--ok)}
 .health.warn{border-left-color:var(--warn)} .health.alert{border-left-color:var(--alert)}
@@ -571,6 +582,7 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
   上升不等於是好事，例如 VIX 與信用利差走高代表風險升高。
 </p>
 {demo_banner}
+{briefing.render(panel, cfg)}
 {health_panel(h, summary, unavailable, skipped or {})}
 {groups_html(panel, groups, extra={"公債殖利率": yield_curve_svg(panel)},
              fixed_order=a.get("fixed_order"))}
