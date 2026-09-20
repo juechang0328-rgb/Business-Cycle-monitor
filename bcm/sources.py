@@ -41,38 +41,78 @@ TICKER_ALIASES = {
 }
 
 
+# 每個正式代號這次實際用了哪個來源。必須記下來並存進快取：
+# 同一個欄位換了來源（指數 ~200 點 vs ETF ~46 元）卻沿用舊資料的話，
+# 兩種尺度會被接在同一條序列上，算出來的變化率完全是垃圾，而且不會報錯。
+ALIAS_SOURCE: dict[str, str] = {}
+
+CHART_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+
+
 def fetch_yahoo_chart(symbol: str, start: str = "2005-01-01",
-                      timeout: int = 20) -> pd.Series:
+                      timeout: int = 20, retries: int = 4) -> pd.Series:
     """繞過 yfinance，直接打 Yahoo 的 chart 端點取收盤價。
 
     存在的理由：yfinance 下載前會先查 quoteSummary 拿時區，那一步對某些
     指數（例如櫃買 ^TWOII）會失敗，於是整欄變成空的 —— 但 chart 端點本身
     是有資料的。少了這條路就只能改用 ETF 代理，失去真正的指數。
+
+    這裡一定要處理 429：這個函式是在一大批 yfinance 下載之後才呼叫的，
+    Yahoo 此時往往正在限流。第一版沒退避重試，結果 429 被當成「抓不到」，
+    默默退回 ETF 代理 —— 症狀和「真的沒有這個代號」一模一樣。
     """
     import json
+    import urllib.error
     import urllib.parse
     import urllib.request
 
     p1 = int(pd.Timestamp(start).timestamp())
     p2 = int(pd.Timestamp.today().normalize().timestamp()) + 86400
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
-           f"{urllib.parse.quote(symbol)}"
-           f"?period1={p1}&period2={p2}&interval=1d")
-    req = urllib.request.Request(url, headers={
+    path = (f"/v8/finance/chart/{urllib.parse.quote(symbol)}"
+            f"?period1={p1}&period2={p2}&interval=1d")
+    headers = {
         # 預設的 Python-urllib UA 會被 Yahoo 擋掉
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "application/json",
-    })
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        data = json.loads(r.read().decode("utf-8"))
+    }
+
+    last_err: Exception | None = None
+    for attempt in range(retries):
+        host = CHART_HOSTS[attempt % len(CHART_HOSTS)]
+        try:
+            req = urllib.request.Request(f"https://{host}{path}", headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            return _parse_chart(data)
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # 429 沒有退避就等於白試；Retry-After 有給就照它等
+            wait = 0.0
+            if e.code == 429:
+                wait = float(e.headers.get("Retry-After") or 0) or 3 * (attempt + 1)
+            elif e.code >= 500:
+                wait = 2 ** attempt
+            else:
+                raise                       # 404 等等是真的沒有，不必重試
+            if attempt < retries - 1:
+                time.sleep(min(wait, 20))
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"chart 端點重試 {retries} 次仍失敗：{last_err}")
+
+
+def _parse_chart(data: dict) -> pd.Series:
     res = (data.get("chart") or {}).get("result") or []
     if not res:
         raise RuntimeError((data.get("chart") or {}).get("error") or "無資料")
     node = res[0]
     ts = node.get("timestamp") or []
-    quote = ((node.get("indicators") or {}).get("quote") or [{}])[0]
-    adj = ((node.get("indicators") or {}).get("adjclose") or [{}])[0]
+    ind = node.get("indicators") or {}
+    quote = (ind.get("quote") or [{}])[0]
+    adj = (ind.get("adjclose") or [{}])[0]
     vals = adj.get("adjclose") or quote.get("close") or []
     if not ts or not vals:
         raise RuntimeError("chart 端點沒有收盤價")
@@ -117,6 +157,7 @@ def pick_alias(close: pd.DataFrame,
                 close[canon] = float("nan")
         else:
             chosen[canon] = rank
+            ALIAS_SOURCE[canon] = winner
             if winner != canon:
                 close = close.rename(columns={winner: canon})
     return close, chosen
@@ -150,6 +191,7 @@ def fill_missing_via_chart(close: pd.DataFrame, alias: dict[str, list[str]],
             # 台股交易日與美股不完全重疊，索引取聯集才不會把資料切掉
             close = close.reindex(close.index.union(s.index))
             close[canon] = s.reindex(close.index)
+            ALIAS_SOURCE[canon] = c
             print(f"  Yahoo：{canon} 由 chart 端點取得"
                   f"（代號 {c}，{len(s)} 筆，起自 {s.index[0].date()}）")
             break
@@ -181,7 +223,9 @@ def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
                 close = close.to_frame(tickers[0])
             close.columns = [str(c) for c in close.columns]
             close, chosen = pick_alias(close.sort_index(), alias)
-            return fill_missing_via_chart(close, alias, start, chosen)
+            close = fill_missing_via_chart(close, alias, start, chosen)
+            close.attrs["alias_source"] = dict(ALIAS_SOURCE)
+            return close
         except Exception as e:  # 網路波動時退避重試
             last_err = e
             if attempt < retries - 1:
@@ -255,6 +299,10 @@ def build_panel(yahoo_tickers: Iterable[str], fred_codes: Iterable[str],
     out = to_business_days(panel, end=end)
     _attach(out, "projections", proj)
     _attach(out, "last_obs", last_obs)
+    src = {k: v for f in frames for k, v in
+           getattr(f, "attrs", {}).get("alias_source", {}).items()}
+    if src:
+        out.attrs["alias_source"] = src
     return out
 
 
@@ -337,15 +385,24 @@ def meta_path(path: str) -> str:
     return f"{base}.lastobs{ext or '.csv'}"
 
 
-def load_last_obs(path: str) -> pd.Series:
+def load_meta(path: str) -> tuple[pd.Series, dict[str, str]]:
+    """讀回 (每欄最後觀測日, {正式代號: 實際來源代號})。"""
     import os
+    empty = pd.Series(dtype="datetime64[ns]")
     if not os.path.exists(path):
-        return pd.Series(dtype="datetime64[ns]")
+        return empty, {}
     try:
         df = pd.read_csv(path, index_col=0, parse_dates=["last_obs"])
-        return pd.to_datetime(df["last_obs"]).sort_index()
     except Exception:
-        return pd.Series(dtype="datetime64[ns]")
+        return empty, {}
+    src = {}
+    if "source" in df.columns:
+        src = {k: v for k, v in df["source"].dropna().items() if v}
+    return pd.to_datetime(df["last_obs"]).sort_index(), src
+
+
+def load_last_obs(path: str) -> pd.Series:
+    return load_meta(path)[0]
 
 
 def drop_future(panel: pd.DataFrame,
@@ -458,8 +515,10 @@ def load_cache(path: str) -> pd.DataFrame | None:
     proj = _combine_proj(inline, stored if stored is not None
                          else pd.DataFrame())
     _attach(df, "projections", proj)
-    lo = load_last_obs(meta_path(path))
+    lo, src = load_meta(meta_path(path))
     _attach(df, "last_obs", lo[lo.index.isin(df.columns)] if len(lo) else lo)
+    if src:
+        df.attrs["alias_source"] = src
     return df
 
 
@@ -472,6 +531,7 @@ def save_cache(panel: pd.DataFrame, path: str,
         os.makedirs(d, exist_ok=True)
     attached = projections_of(panel)
     attached_lo = last_obs_of(panel)
+    alias_src = dict(getattr(panel, "attrs", {}).get("alias_source") or {})
     panel, inline = split_projections(panel)
     panel.to_csv(path)
     proj = _combine_proj(_combine_proj(attached, inline),
@@ -481,7 +541,11 @@ def save_cache(panel: pd.DataFrame, path: str,
         proj.to_csv(projection_path(path))
     lo = last_obs if last_obs is not None else attached_lo
     if lo is not None and len(lo):
-        lo.rename("last_obs").to_frame().to_csv(meta_path(path))
+        meta = lo.rename("last_obs").to_frame()
+        src = alias_src
+        if src:
+            meta["source"] = pd.Series(src)
+        meta.to_csv(meta_path(path))
 
 
 def merge_panel(old: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
@@ -492,10 +556,22 @@ def merge_panel(old: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
     """
     chunks = [projections_of(old)]
     lo_old, lo_new = last_obs_of(old), last_obs_of(new)
+    src_old = dict(getattr(old, "attrs", {}).get("alias_source") or {})
+    src_new = dict(getattr(new, "attrs", {}).get("alias_source") or {})
     p_attached_new = projections_of(new)
     new, p_new = split_projections(new)
     if old is not None and not old.empty:
         old, p_old = split_projections(old)
+        # 來源換了就把舊欄位整欄丟掉，不要接在一起。
+        # 櫃買指數約 200 點、代理 ETF 約 46 元，混在同一欄算出的變化率
+        # 是純粹的垃圾，而且不會報錯 —— 只會看起來像市場崩了。
+        switched = [c for c, v in src_new.items()
+                    if c in old.columns and src_old.get(c, v) != v]
+        for c in switched:
+            print(f"  來源變更：{c} 由 {src_old[c]} 改為 {src_new[c]}，"
+                  f"捨棄舊快取欄位")
+        if switched:
+            old = old.drop(columns=switched)
         chunks += [p_old, p_attached_new, p_new]
         merged = new.combine_first(old)
         merged = merged.reindex(
@@ -510,4 +586,7 @@ def merge_panel(old: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
     _attach(out, "projections", proj)
     lo = _combine_last_obs(lo_old, lo_new)
     _attach(out, "last_obs", lo[lo.index.isin(out.columns)] if len(lo) else lo)
+    merged_src = {**src_old, **src_new}
+    if merged_src:
+        out.attrs["alias_source"] = merged_src
     return out
