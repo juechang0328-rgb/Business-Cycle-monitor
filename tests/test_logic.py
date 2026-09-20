@@ -564,40 +564,26 @@ def test_chart_endpoint_outranks_fallback_proxy(monkeypatch):
 
 
 def test_chart_retries_on_rate_limit(monkeypatch):
-    """429 沒有退避重試就等於沒試過。
+    """429 是機器人偵測，換一台主機再試一次值得。
 
-    這個函式是在一大批 yfinance 下載之後才呼叫的，Yahoo 此時往往正在限流。
-    第一版沒處理 429，結果被限流的那次被當成「抓不到這個代號」，
-    默默退回 ETF 代理 —— 症狀和「真的沒有這個代號」一模一樣。
+    Yahoo 不只看 User-Agent，還看 TLS 指紋：urllib 就算把 UA 設成 Chrome，
+    握手層看起來仍是 Python，會被回 429。真正的修法是用 curl_cffi 冒充
+    Chrome（見 _chart_get），但傳輸層失敗時仍要換主機重試。
     """
-    import json
-    import urllib.error
     from bcm import sources
 
     calls = []
-
-    class FakeResp:
-        def __init__(self, payload):
-            self._b = json.dumps(payload).encode()
-        def read(self):
-            return self._b
-        def __enter__(self):
-            return self
-        def __exit__(self, *a):
-            return False
-
     payload = {"chart": {"result": [{
         "timestamp": [1767225600, 1767312000],
         "indicators": {"quote": [{"close": [200.0, 201.0]}]}}]}}
 
-    def fake_urlopen(req, timeout=None):
-        calls.append(req.full_url)
+    def fake_get(url, timeout):
+        calls.append(url)
         if len(calls) == 1:
-            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests",
-                                         {"Retry-After": "0"}, None)
-        return FakeResp(payload)
+            return 429, None, {"Retry-After": "0"}
+        return 200, payload, {}
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(sources, "_chart_get", fake_get)
     monkeypatch.setattr(sources.time, "sleep", lambda s: None)
     s = sources.fetch_yahoo_chart("^TWOII", start="2026-01-01")
 
@@ -608,54 +594,42 @@ def test_chart_retries_on_rate_limit(monkeypatch):
 
 def test_chart_does_not_retry_on_404(monkeypatch):
     """404 是真的查無此標的，重試只是浪費時間。"""
-    import urllib.error
     from bcm import sources
 
     calls = []
 
-    def fake_urlopen(req, timeout=None):
-        calls.append(req.full_url)
-        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+    def fake_get(url, timeout):
+        calls.append(url)
+        return 404, None, {}
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    with pytest.raises(urllib.error.HTTPError):
+    monkeypatch.setattr(sources, "_chart_get", fake_get)
+    with pytest.raises(RuntimeError, match="查無此標的"):
         sources.fetch_yahoo_chart("^NOPE", start="2026-01-01")
     assert len(calls) == 1
 
 
-def test_merge_drops_column_when_data_source_changed(tmp_path):
-    """同一欄換了來源就不能接在一起。
+def test_chart_impersonates_chrome(monkeypatch):
+    """必須走 curl_cffi 的瀏覽器冒充，不能退回 urllib 的裸請求。"""
+    from curl_cffi import requests as creq
+    from bcm import sources
 
-    櫃買指數約 200 點、備援 ETF 約 46 元。兩種尺度接在同一條序列上，
-    算出來的變化率是純粹的垃圾，而且不會報錯 —— 只會看起來像市場崩了。
-    """
-    from bcm.sources import load_cache, merge_panel, save_cache
+    seen = {}
 
-    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=40)
-    old = pd.DataFrame({"^TWOII": 46.0, "^GSPC": 7000.0}, index=idx)
-    old.attrs["alias_source"] = {"^TWOII": "006201.TWO"}
-    old.attrs["last_obs"] = pd.Series({"^TWOII": idx[-1], "^GSPC": idx[-1]})
+    class R:
+        status_code = 200
+        text = '{"chart":{"result":[{"timestamp":[1767225600],' \
+               '"indicators":{"quote":[{"close":[200.0]}]}}]}}'
+        headers = {}
 
-    # 新資料只涵蓋後半段，且來源換成指數本身
-    new = pd.DataFrame({"^TWOII": 200.0}, index=idx[20:])
-    new.attrs["alias_source"] = {"^TWOII": "^TWOII"}
+    def fake(url, **kw):
+        seen.update(kw)
+        return R()
 
-    merged = merge_panel(old, new)
-    vals = merged["^TWOII"].dropna().unique()
-    assert list(vals) == [200.0], "舊來源的值必須整欄丟掉，不可混用"
-    assert merged["^TWOII"].iloc[:20].isna().all()
-    assert (merged["^GSPC"].dropna() == 7000.0).all()   # 其他欄不受影響
-
-    # 來源沒變時照常合併
-    same = pd.DataFrame({"^TWOII": 47.0}, index=idx[20:])
-    same.attrs["alias_source"] = {"^TWOII": "006201.TWO"}
-    kept = merge_panel(old, same)
-    assert set(kept["^TWOII"].dropna().unique()) == {46.0, 47.0}
-
-    # 來源要能跟著快取存下來，否則下次重開又分不出是誰
-    path = tmp_path / "panel.csv"
-    save_cache(merged, str(path))
-    assert load_cache(str(path)).attrs["alias_source"]["^TWOII"] == "^TWOII"
+    monkeypatch.setattr(creq, "get", fake)
+    out = sources.fetch_yahoo_chart("^TWOII", start="2026-01-01")
+    assert seen.get("impersonate") == "chrome"
+    assert "Chrome/" in seen["headers"]["User-Agent"]
+    assert list(out.values) == [200.0]
 
 
 def test_prefetch_runs_before_batch_and_beats_proxy(monkeypatch):

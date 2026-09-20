@@ -49,6 +49,47 @@ ALIAS_SOURCE: dict[str, str] = {}
 CHART_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
 
 
+def _chart_get(url: str, timeout: int) -> tuple[int, dict | None, dict]:
+    """取一次 chart JSON，回傳 (HTTP 狀態碼, JSON, 回應標頭)。
+
+    優先用 curl_cffi 並冒充 Chrome。這是關鍵：Yahoo 不只看 User-Agent，
+    還看 TLS 指紋（JA3）。urllib 就算把 UA 字串設成 Chrome，握手層看起來
+    仍然是 Python，會被回 429 —— 那是機器人偵測，不是真的流量超限，
+    所以退避重試再久也沒用。curl_cffi 是 yfinance 自己的相依套件，
+    本來就會裝，不必新增依賴。
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Referer": "https://finance.yahoo.com/",
+    }
+    try:
+        from curl_cffi import requests as creq
+        r = creq.get(url, headers=headers, timeout=timeout,
+                     impersonate="chrome")
+        body = None
+        if r.status_code == 200:
+            import json as _json
+            body = _json.loads(r.text)
+        return r.status_code, body, dict(r.headers)
+    except ImportError:
+        pass
+
+    import json
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=headers),
+                timeout=timeout) as r:
+            return 200, json.loads(r.read().decode("utf-8")), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, None, dict(e.headers)
+
+
 def fetch_yahoo_chart(symbol: str, start: str = "2005-01-01",
                       timeout: int = 20, retries: int = 4) -> pd.Series:
     """繞過 yfinance，直接打 Yahoo 的 chart 端點取收盤價。
@@ -56,52 +97,30 @@ def fetch_yahoo_chart(symbol: str, start: str = "2005-01-01",
     存在的理由：yfinance 下載前會先查 quoteSummary 拿時區，那一步對某些
     指數（例如櫃買 ^TWOII）會失敗，於是整欄變成空的 —— 但 chart 端點本身
     是有資料的。少了這條路就只能改用 ETF 代理，失去真正的指數。
-
-    這裡一定要處理 429：這個函式是在一大批 yfinance 下載之後才呼叫的，
-    Yahoo 此時往往正在限流。第一版沒退避重試，結果 429 被當成「抓不到」，
-    默默退回 ETF 代理 —— 症狀和「真的沒有這個代號」一模一樣。
     """
-    import json
-    import urllib.error
     import urllib.parse
-    import urllib.request
 
     p1 = int(pd.Timestamp(start).timestamp())
     p2 = int(pd.Timestamp.today().normalize().timestamp()) + 86400
     path = (f"/v8/finance/chart/{urllib.parse.quote(symbol)}"
             f"?period1={p1}&period2={p2}&interval=1d")
-    headers = {
-        # 預設的 Python-urllib UA 會被 Yahoo 擋掉
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Accept": "application/json",
-    }
 
-    last_err: Exception | None = None
+    last: str = "未知"
     for attempt in range(retries):
         host = CHART_HOSTS[attempt % len(CHART_HOSTS)]
-        try:
-            req = urllib.request.Request(f"https://{host}{path}", headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            return _parse_chart(data)
-        except urllib.error.HTTPError as e:
-            last_err = e
-            # 429 沒有退避就等於白試；Retry-After 有給就照它等
-            wait = 0.0
-            if e.code == 429:
-                wait = float(e.headers.get("Retry-After") or 0) or 3 * (attempt + 1)
-            elif e.code >= 500:
-                wait = 2 ** attempt
-            else:
-                raise                       # 404 等等是真的沒有，不必重試
-            if attempt < retries - 1:
-                time.sleep(min(wait, 20))
-        except Exception as e:
-            last_err = e
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
-    raise RuntimeError(f"chart 端點重試 {retries} 次仍失敗：{last_err}")
+        code, body, hdrs = _chart_get(f"https://{host}{path}", timeout)
+        if code == 200 and body is not None:
+            return _parse_chart(body)
+        last = f"HTTP {code}"
+        if code == 404:
+            raise RuntimeError(f"{symbol} 查無此標的（HTTP 404）")
+        if attempt == retries - 1:
+            break
+        wait = 2 ** attempt
+        if code == 429:
+            wait = float(hdrs.get("Retry-After") or 0) or 3 * (attempt + 1)
+        time.sleep(min(wait, 20))
+    raise RuntimeError(f"chart 端點重試 {retries} 次仍失敗：{last}")
 
 
 def _parse_chart(data: dict) -> pd.Series:
@@ -135,15 +154,19 @@ def resolve_aliases(tickers: Iterable[str]) -> tuple[list[str], dict[str, list[s
     return out, alias
 
 
-def prefetch_aliases(alias: dict[str, list[str]],
-                     start: str) -> dict[str, pd.Series]:
-    """在大批下載之前，先用 chart 端點取第一順位代號。"""
+def prefetch_aliases(alias: dict[str, list[str]], start: str,
+                     retries: int = 2) -> dict[str, pd.Series]:
+    """在大批下載之前，先用 chart 端點取第一順位代號。
+
+    重試次數刻意壓低：GitHub Actions 的出口 IP 被 Yahoo 限流得很兇，
+    真的被擋時多試幾次也救不回來，只是讓每天的排程白等幾十秒。
+    """
     out: dict[str, pd.Series] = {}
     for canon, cands in alias.items():
         if not cands:
             continue
         try:
-            s = fetch_yahoo_chart(cands[0], start=start)
+            s = fetch_yahoo_chart(cands[0], start=start, retries=retries)
         except Exception as e:
             print(f"  · 預抓 {cands[0]} 失敗：{e}")
             continue
@@ -260,10 +283,13 @@ def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
             close.columns = [str(c) for c in close.columns]
             close, chosen = pick_alias(close.sort_index(), alias)
             close = apply_prefetched(close, pre)
-            # 預抓沒成功的才再試一次（此時配額多半已經用完，但成本很低）
-            close = fill_missing_via_chart(
-                close, {k: v for k, v in alias.items() if k not in pre},
-                start, chosen)
+            # 預抓已經試過第一順位了，這裡只補「預抓沒碰過」的候選，
+            # 不要把剛剛被 429 擋掉的代號再重試一輪浪費時間
+            rest = {k: v[1:] for k, v in alias.items()
+                    if k not in pre and len(v) > 1}
+            close = fill_missing_via_chart(close, rest, start,
+                                           {k: r - 1 for k, r in chosen.items()
+                                            if r})
             close.attrs["alias_source"] = dict(ALIAS_SOURCE)
             return close
         except Exception as e:  # 網路波動時退避重試
