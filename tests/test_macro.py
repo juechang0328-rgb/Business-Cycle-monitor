@@ -586,3 +586,46 @@ def test_dormant_indicator_not_counted_as_anomaly():
                [("Sahm Rule", "SAHMREALTIME", "level", {"warn": 0.50})])]
     html = macro_dash.groups_html(panel, groups)
     assert "變化異常" not in html
+
+
+def test_ratio_card_explains_itself():
+    """只給一個比值的絕對數字，讀者無從判斷現在算高還是低、錢往哪流。"""
+    idx = pd.bdate_range("2019-01-01", periods=1800)
+    # 先升後降：現值落在區間偏低處，且近三個月在下跌
+    vals = np.r_[np.linspace(100.0, 140.0, 1500), np.linspace(140.0, 96.0, 300)]
+    panel = pd.DataFrame({"RATIO_SMALL_LARGE": vals}, index=idx)
+
+    html = macro_dash.metric_card(panel, "小型股／大型股",
+                                  "RATIO_SMALL_LARGE", "price", None)
+    assert "5年偏低" in html                      # 歷史位置徽章
+    assert "資金退回大型股避險" in html            # 下跌時的白話判讀
+    assert "資金下沉到小型股" not in html          # 不能給反向的說法
+    assert "百分位" in html                       # 徽章的 title 有解釋
+
+    # 上升時換成另一句（尾段要真的在漲，不能只是把序列反轉）
+    rising = pd.DataFrame(
+        {"RATIO_SMALL_LARGE": np.r_[np.linspace(140.0, 96.0, 1500),
+                                    np.linspace(96.0, 140.0, 300)]},
+        index=idx)
+    up = macro_dash.metric_card(rising, "小型股／大型股",
+                                "RATIO_SMALL_LARGE", "price", None)
+    assert "資金下沉到小型股，風險偏好提高" in up
+
+    # 非比值的卡片不該長出這些東西
+    plain = pd.DataFrame({"^GSPC": vals}, index=idx)
+    assert "m-note" not in macro_dash.metric_card(
+        plain, "標普500", "^GSPC", "price", None)
+
+
+def test_history_rank_positions_within_own_range():
+    idx = pd.bdate_range("2021-01-01", periods=1300)
+    s = pd.Series(np.linspace(10.0, 110.0, 1300), index=idx)
+    pct, band = macro_dash.history_rank(s)
+    assert pct > 99 and band == "偏高"            # 一路上升，現值在頂端
+
+    pct2, band2 = macro_dash.history_rank(
+        pd.Series(s.values[::-1], index=idx))
+    assert pct2 < 1 and band2 == "偏低"
+
+    # 歷史太短時不硬給一個沒意義的百分位
+    assert macro_dash.history_rank(s.head(20)) is None

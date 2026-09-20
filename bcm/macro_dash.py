@@ -238,6 +238,43 @@ SCALE_BY_CODE = {
 }
 
 
+# 比值卡片的白話判讀：{代碼: (上升時的意思, 下降時的意思)}。
+# 只描述「錢往哪邊流」這件已經發生的事，不講後市 ——
+# 本專案實測過景氣階段模型沒有預測力，這一區同樣不該被當成訊號。
+RATIO_READING = {
+    "RATIO_SMALL_LARGE": ("資金下沉到小型股，風險偏好提高",
+                          "資金退回大型股避險"),
+    "RATIO_NDX_SPX":     ("資金偏好成長與科技股",
+                          "往價值與防禦類股輪動"),
+    "RATIO_OTC_TWSE":    ("台股投機氣氛升溫，中小型股較強",
+                          "台股資金集中到權值股"),
+    "RATIO_HY_IG":       ("願意承擔信用風險換取收益",
+                          "信用市場轉趨保守"),
+    "RATIO_CYC_DEF":     ("市場押景氣擴張",
+                          "往防禦類股撤退"),
+    "RATIO_BREADTH":     ("上漲的家數變廣",
+                          "漲勢集中在少數權值股"),
+}
+
+
+def history_rank(s: pd.Series, years: int = 5) -> tuple[float, str] | None:
+    """現值落在自己近 N 年區間的第幾百分位。
+
+    比值的絕對數字沒有意義，但「它相對自己的歷史算高還是低」有。
+    少了這個，卡片上那串數字對讀者來說就只是一串數字。
+    """
+    if s is None or len(s) < 60:
+        return None
+    win = s.loc[s.index[-1] - pd.DateOffset(years=years):].dropna()
+    if len(win) < 60:
+        win = s.dropna()
+    if len(win) < 60:
+        return None
+    pct = float((win <= win.iloc[-1]).mean() * 100)
+    band = "偏低" if pct < 25 else ("偏高" if pct > 75 else "中性")
+    return pct, band
+
+
 def metric_card(panel: pd.DataFrame, name: str, code: str,
                 mode: str, th: dict | None, zscore: float | None = None,
                 last_obs: pd.Timestamp | None = None) -> str:
@@ -296,13 +333,30 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
             raw_scale[0] if raw_scale else 1)
         shown_chg = round(chg * _sc, 2)
     arrow = "▲" if shown_chg > 0 else ("▼" if shown_chg < 0 else "—")
-    badge = f'<span class="m-badge {lvl}">{_esc(note)}</span>' if note else ""
+
+    # 比值卡片：徽章顯示它在自己歷史區間的位置，下方補一行白話判讀。
+    # 只給一個比值的絕對數字，讀者無從判斷現在算高還是低、錢往哪流。
+    reading = rank_badge = ""
+    if code in RATIO_READING:
+        rk = history_rank(snap["series"])
+        if rk:
+            pct_rank, band = rk
+            rank_badge = (f'<span class="m-badge normal" '
+                          f'title="現值落在近 5 年區間的第 {pct_rank:.0f} 百分位">'
+                          f'5年{band} {pct_rank:.0f}%</span>')
+        up, down = RATIO_READING[code]
+        if shown_chg:
+            reading = (f'<div class="m-note">'
+                       f'{up if shown_chg > 0 else down}</div>')
+
+    badge = (f'<span class="m-badge {lvl}">{_esc(note)}</span>' if note
+             else rank_badge)
     return (
         f'<div class="mcard">'
         f'  <div class="m-head"><span class="m-name">{_esc(name)}</span>{badge}</div>'
         f'  <div class="m-val">{cur_disp}</div>'
         f'  <div class="m-chg"><span class="m-arrow">{arrow}</span>{chg_disp}'
-        f'<span class="m-chg-lab">{chg_lab}</span>{zchip}</div>'
+        f'<span class="m-chg-lab">{chg_lab}</span>{zchip}</div>{reading}'
         f'  {sparkline(snap["series"], thresholds=th)}'
         f'  <div class="m-sub">{obs_date}　{_esc(code)}</div>'
         f'  {glossary_block(code)}'
@@ -423,9 +477,13 @@ GROUP_NOTES = {
         "這一區<b>固定順序</b>，不依變化幅度重排 —— 每天位置一樣才好比對。",
     "資金流向":
         "全部是<b>比值</b>（A÷B），回答的是「錢往哪邊跑」，不是「會漲還是會跌」。"
-        "比值的絕對數字沒有意義，看的是<b>方向</b>與相對自己歷史的位置："
-        "上升代表資金往分子那一端流。相除之後兩邊共同的因素（大盤漲跌、"
-        "利率水準）大致抵銷，剩下的才是資金偏好的變化。"
+        "相除之後兩邊共同的因素（大盤漲跌、利率水準）大致抵銷，"
+        "剩下的才是資金偏好的變化。"
+        "<br><b>怎麼看這幾張卡</b>：比值那個數字本身不用管，看另外兩樣 ——"
+        "① <b>徽章</b>：現值落在自己近 5 年區間的第幾百分位（偏低／中性／偏高）；"
+        "② <b>灰線那句話</b>：近三個月的方向代表錢往哪邊流。"
+        "兩者要一起看：「偏低且還在往下」是持續的趨勢，"
+        "「偏低但轉為往上」才是變化。"
         "<br>這些是<b>同期描述</b>，不是領先指標。本專案已經實測過景氣階段模型"
         "對未來報酬沒有預測力，這一區同樣不該拿來擇時。",
 }
@@ -642,6 +700,8 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
 .m-chg{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .m-arrow{margin-right:4px;font-size:9px;vertical-align:1px}
 .m-chg-lab{margin-left:6px;opacity:.7;font-size:11px}
+.m-note{font-size:11.5px;color:var(--muted);line-height:1.5;margin:4px 0 1px;
+ padding-left:8px;border-left:2px solid var(--line)}
 .spark{width:100%;height:40px;display:block;margin:4px 0 2px}
 .spark-line{fill:none;stroke:var(--accent);stroke-width:1.6;
  stroke-linejoin:round;stroke-linecap:round}
