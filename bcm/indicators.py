@@ -197,7 +197,27 @@ MACRO_FRED = [
     "T10Y2Y", "T10Y3M", "BAMLH0A0HYM2", "NFCI",
 ]
 
-MACRO_YAHOO = ["HG=F", "GC=F", "CL=F", "^VIX", "^GSPC"]
+MACRO_YAHOO = [
+    "HG=F", "GC=F", "CL=F", "^VIX", "^GSPC",
+    # 能源
+    "BZ=F",   # 布蘭特原油（CL=F 是西德州 WTI，兩者價差反映運輸與品質差異）
+    "NG=F",   # 天然氣
+    "RB=F",   # RBOB 汽油
+    # 金屬
+    "SI=F",   # 白銀
+    "PL=F",   # 鉑
+    "ALI=F",  # 鋁
+    # 農產品
+    "ZC=F",   # 玉米
+    "ZW=F",   # 小麥
+    "ZS=F",   # 黃豆
+    "SB=F",   # 糖
+    "KC=F",   # 咖啡
+    "CT=F",   # 棉花
+    # 綜合
+    "DBC",    # 商品指數 ETF（廣泛）
+    "DBA",    # 農產品 ETF
+]
 
 # 明確記錄「想要但拿不到」的序列 —— 不是遺漏，是已知限制。
 # 沒有這份清單，抓不到的指標會變成靜默的缺口。
@@ -240,6 +260,20 @@ MACRO_HEALTH = [
     ("原油",            "CL=F",         "daily"),
     ("VIX",             "^VIX",         "daily"),
     ("標普500",         "^GSPC",        "daily"),
+    ("布蘭特原油",      "BZ=F",         "daily"),
+    ("天然氣",          "NG=F",         "daily"),
+    ("RBOB汽油",        "RB=F",         "daily"),
+    ("白銀",            "SI=F",         "daily"),
+    ("鉑",              "PL=F",         "daily"),
+    ("鋁",              "ALI=F",        "daily"),
+    ("玉米",            "ZC=F",         "daily"),
+    ("小麥",            "ZW=F",         "daily"),
+    ("黃豆",            "ZS=F",         "daily"),
+    ("糖",              "SB=F",         "daily"),
+    ("咖啡",            "KC=F",         "daily"),
+    ("棉花",            "CT=F",         "daily"),
+    ("商品指數DBC",     "DBC",          "daily"),
+    ("農產品DBA",       "DBA",          "daily"),
 ]
 
 # 儀表板分組：(區塊標題, [(顯示名稱, 代碼, 呈現方式, 門檻或說明)])
@@ -276,6 +310,33 @@ MACRO_GROUPS = [
         ("高收益債利差", "BAMLH0A0HYM2", "level",
          {"calm": 3.00, "normal": 4.50, "stress": 5.00, "unit": "pp"}),
         ("金融條件NFCI", "NFCI",         "level", {"tight": 0.0}),
+    ]),
+    ("原物料 · 能源", [
+        ("WTI 原油",     "CL=F",     "pct", None),
+        ("布蘭特原油",   "BZ=F",     "pct", None),
+        ("天然氣",       "NG=F",     "pct", None),
+        ("RBOB 汽油",    "RB=F",     "pct", None),
+        ("油金比",       "OIL_GOLD", "level", None),
+    ]),
+    ("原物料 · 金屬", [
+        ("黃金",   "GC=F", "pct", None),
+        ("白銀",   "SI=F", "pct", None),
+        ("銅",     "HG=F", "pct", None),
+        ("鉑",     "PL=F", "pct", None),
+        ("鋁",     "ALI=F", "pct", None),
+    ]),
+    ("原物料 · 農產品", [
+        ("玉米",   "ZC=F", "pct", None),
+        ("小麥",   "ZW=F", "pct", None),
+        ("黃豆",   "ZS=F", "pct", None),
+        ("糖",     "SB=F", "pct", None),
+        ("咖啡",   "KC=F", "pct", None),
+        ("棉花",   "CT=F", "pct", None),
+    ]),
+    ("原物料 · 綜合", [
+        ("商品指數 DBC",   "DBC", "pct", None),
+        ("農產品 DBA",     "DBA", "pct", None),
+        ("銅金比",         "COPPER_GOLD", "level", None),
     ]),
     ("市場情緒", [
         ("VIX",          "^VIX",         "level", {"calm": 15, "stress": 25}),

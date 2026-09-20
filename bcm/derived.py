@@ -30,6 +30,15 @@ DERIVED = {
         "display_unit": "",
         "note": "COMEX 銅／黃金，乘 1000 便於閱讀",
     },
+    "OIL_GOLD": {
+        "name": "油金比",
+        "requires": ["CL=F", "GC=F"],
+        "fn": lambda p: p["CL=F"] / p["GC=F"] * 1000,
+        "unit": "比值×1000",
+        "scale": 1.0,
+        "display_unit": "",
+        "note": "WTI 原油／黃金，乘 1000 便於閱讀",
+    },
     "SAHM_GAP": {
         "name": "Sahm Rule 缺口",
         "requires": ["UNRATE"],
