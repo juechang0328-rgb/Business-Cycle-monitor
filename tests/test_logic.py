@@ -803,3 +803,54 @@ def test_discover_handles_openapi3_servers(monkeypatch):
                         lambda url, timeout=20: (200, spec, ""))
     assert sources.discover_tpex_index_paths() == [
         "https://www.tpex.org.tw/openapi/v1/tpex_index"]
+
+
+def test_tpex_parser_takes_close_not_open():
+    """「日期後的第一個數字」會抓到開盤價。
+
+    實際踩過：TPEx 欄位順序是開盤／最高／最低／收盤，2026-09-18 開盤
+    401.05、收盤 412.68，儀表板上顯示的是 401.05。數字看起來完全合理，
+    所以不會有人發現 —— 只有拿原始資料對照才看得出來。
+    """
+    from bcm.sources import _parse_tpex
+
+    # 具名欄位：以欄位名認收盤
+    named = [{"Date": "2026-09-18", "Open": "401.05", "High": "412.68",
+              "Low": "401.05", "Close": "412.68", "Volume": "2659079"}]
+    assert _parse_tpex(named).iloc[0] == 412.68
+
+    zh = [{"日期": "115/09/18", "開盤價": "401.05", "最高價": "412.68",
+           "最低價": "401.05", "收盤價": "412.68"}]
+    assert _parse_tpex(zh).iloc[0] == 412.68
+
+    # 無欄位名：位置推斷取第 4 個數字（OHLC）
+    positional = [["2026-09-18", "401.05", "412.68", "401.05", "412.68"]]
+    assert _parse_tpex(positional).iloc[0] == 412.68
+
+    # 不像 OHLC 時退回第一個數字，不要誤拿成交量
+    not_ohlc = [["2026-09-18", "401.05", "2659079"]]
+    assert _parse_tpex(not_ohlc).iloc[0] == 401.05
+
+
+def test_twoii_seed_merges_with_live(monkeypatch, tmp_path):
+    """歷史種子檔要和即時資料合併，重疊處以即時為準。"""
+    from bcm import sources
+
+    seed = tmp_path / "seed.csv"
+    seed.write_text("date,close\n2026-09-17,398.17\n2026-09-18,999.0\n")
+    monkeypatch.setattr(sources, "TWOII_SEED", str(seed))
+    monkeypatch.setattr(sources, "TPEX_ENDPOINTS",
+                        [("fake", "https://example.invalid/{ymd}{roc}")])
+    monkeypatch.setattr(sources, "_http_json", lambda url, timeout=20: (
+        200, [{"Date": "2026-09-18", "Close": "412.68"}], ""))
+
+    out = sources.fetch_tpex_index(start="2000-01-01")
+    assert out.loc[pd.Timestamp("2026-09-17")] == 398.17   # 來自種子檔
+    assert out.loc[pd.Timestamp("2026-09-18")] == 412.68   # 即時覆蓋種子
+
+    # 即時端點全掛時仍要交出歷史，而不是整欄消失
+    monkeypatch.setattr(sources, "_http_json",
+                        lambda url, timeout=20: (500, None, "boom"))
+    monkeypatch.setattr(sources, "discover_tpex_index_paths", lambda: [])
+    fallback = sources.fetch_tpex_index(start="2000-01-01")
+    assert len(fallback) == 2 and fallback.iloc[-1] == 999.0

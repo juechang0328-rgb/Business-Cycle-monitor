@@ -267,8 +267,32 @@ def discover_tpex_index_paths() -> list[str]:
     return []
 
 
+TWOII_SEED = "data/twoii_history.csv"
+
+
+def load_twoii_seed() -> pd.Series:
+    """歷年櫃買指數收盤（一次性種子檔）。
+
+    櫃買中心的 OpenAPI 只提供當月，光靠每日排程要三個月後才算得出
+    「近三個月變化」。這份檔案是使用者提供的歷史收盤，存在版控裡，
+    每次都與即時資料合併 —— 即使快取被清掉也不會失去歷史。
+    """
+    import os
+    if not os.path.exists(TWOII_SEED):
+        return pd.Series(dtype="float64")
+    try:
+        df = pd.read_csv(TWOII_SEED, index_col=0, parse_dates=True)
+        return df.iloc[:, 0].dropna().sort_index()
+    except Exception as e:
+        print(f"  · 櫃買歷史種子檔讀取失敗：{e}")
+        return pd.Series(dtype="float64")
+
+
 def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
-    """從櫃買中心取櫃買指數收盤。先試已知端點，失敗則查 OpenAPI 目錄。"""
+    """從櫃買中心取櫃買指數收盤。先試已知端點，失敗則查 OpenAPI 目錄。
+
+    即時資料與歷史種子檔合併，重疊處以即時資料為準。
+    """
     today = pd.Timestamp.today().normalize()
     roc = f"{today.year - 1911}/{today.month:02d}"
     tried = [(n, t.format(ymd=today.strftime("%Y%m%d"), roc=roc))
@@ -286,49 +310,97 @@ def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
             return None
         return out
 
+    seed = load_twoii_seed()
+
+    def merge(live: pd.Series) -> pd.Series:
+        if not len(seed):
+            return live.loc[start:]
+        out = live.combine_first(seed).sort_index()
+        print(f"  TPEx：併入歷史種子檔 {len(seed)} 筆"
+              f"（{seed.index[0].date()} 起），合計 {len(out)} 筆")
+        return out.loc[start:]
+
     for name, url in tried:
         got = attempt(name, url)
         if got is not None:
             print(f"  TPEx：櫃買指數取自 {name}（{len(got)} 筆）")
-            return got.loc[start:]
+            return merge(got)
 
     for url in discover_tpex_index_paths():
         got = attempt(url.rsplit("/", 1)[-1], url)
         if got is not None:
             print(f"  TPEx：櫃買指數取自 {url}（{len(got)} 筆）")
-            return got.loc[start:]
+            return merge(got)
 
+    # 即時端點全掛時仍要把歷史交出去：舊資料比沒資料有用，
+    # 而且資料健康檢查會用真實觀測日標出它已經停更幾天。
+    if len(seed):
+        print("  ⚠ TPEx 即時端點皆失敗，僅使用歷史種子檔")
+        return seed.loc[start:]
     raise RuntimeError("櫃買中心所有候選端點都取不到指數")
+
+
+CLOSE_HINTS = ("close", "收盤", "收市", "closing")
+OPEN_HINTS = ("open", "開盤", "high", "低", "最高", "最低", "low")
 
 
 def _parse_tpex(rows: list) -> pd.Series | None:
     """從資料列裡找出（日期, 收盤指數）。
 
-    TPEx 的欄位名稱與順序在改版前後不一致，因此用「找得到日期就用」的
-    寬鬆解法，而不是寫死欄位位置 —— 寫死一改版就靜靜地壞掉。
+    「找到日期後取第一個數字」會抓到<b>開盤價</b>——TPEx 的欄位順序是
+    開盤／最高／最低／收盤，實際踩過這個坑：2026-09-18 開盤 401.05、
+    收盤 412.68，儀表板上顯示的是 401.05。數字看起來很合理，所以不會
+    有人發現。因此具名欄位一律以欄位名認收盤價，認不出來才退回位置推斷。
     """
     out: dict[pd.Timestamp, float] = {}
     for row in rows:
-        vals = list(row.values()) if isinstance(row, dict) else list(row)
-        d = v = None
-        for x in vals:
-            if not isinstance(x, str):
-                continue
-            t = x.strip()
-            if d is None:
-                d = _tpex_date(t)
-                if d is not None:
+        if isinstance(row, dict):
+            d = v = None
+            for k, x in row.items():
+                if not isinstance(x, str):
                     continue
-            if v is None and d is not None:
-                try:
-                    v = float(t.replace(",", ""))
-                except ValueError:
-                    pass
+                if d is None and _tpex_date(x.strip()) is not None:
+                    d = _tpex_date(x.strip())
+                    continue
+                if any(h in k.lower() for h in CLOSE_HINTS):
+                    v = _tpex_num(x)
+            if d is not None and v is None:      # 沒有可辨識的收盤欄位
+                v = _tpex_positional_close(list(row.values()))
+            if d is not None and v is not None:
+                out[d] = v
+            continue
+
+        vals = list(row)
+        d = next((_tpex_date(x.strip()) for x in vals
+                  if isinstance(x, str) and _tpex_date(x.strip()) is not None),
+                 None)
+        v = _tpex_positional_close(vals)
         if d is not None and v is not None:
             out[d] = v
     if not out:
         return None
     return pd.Series(out).sort_index()
+
+
+def _tpex_num(x) -> float | None:
+    try:
+        return float(str(x).replace(",", "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def _tpex_positional_close(vals: list) -> float | None:
+    """無欄位名時的位置推斷：開盤／最高／最低／收盤取第 4 個數字。
+
+    只在四個數字看起來真的是 OHLC（最高 ≥ 開盤、收盤 ≥ 最低）時才採用，
+    否則退回第一個數字 —— 猜錯的話寧可拿到開盤價，也不要拿到成交量。
+    """
+    nums = [n for n in (_tpex_num(x) for x in vals) if n is not None]
+    if len(nums) >= 4:
+        o, h, l, c = nums[:4]
+        if h >= max(o, c) and l <= min(o, c) and h >= l:
+            return c
+    return nums[0] if nums else None
 
 
 def _tpex_date(t: str) -> pd.Timestamp | None:
