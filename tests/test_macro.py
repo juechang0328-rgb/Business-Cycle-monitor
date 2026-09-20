@@ -488,3 +488,23 @@ def test_span_days_reports_actual_window():
     snap = macro_dash.metric_snapshot(panel, "X", "level")
     assert snap["span_days"] < 20            # 只有兩週多的資料
     assert snap["change"] < 14               # 不是頭尾相減
+
+
+def test_pct_mode_survives_short_history():
+    """歷史不足一個比較區間時不該顯示「無資料」—— 明明有資料只是還不夠長。"""
+    idx = pd.bdate_range("2026-09-01", periods=14)
+    panel = pd.DataFrame({"^TWOII": np.linspace(402.0, 401.0, 14)}, index=idx)
+
+    s = macro_dash.metric_series(panel, "^TWOII", "pct")
+    assert not s.empty
+    snap = macro_dash.metric_snapshot(panel, "^TWOII", "pct")
+    assert snap["ok"]
+
+    html = macro_dash.metric_card(panel, "櫃買OTC指數", "^TWOII", "pct", None)
+    assert "無資料" not in html
+    assert "近3個月" not in html          # 標籤仍要照實說
+
+    # 歷史夠長時走原本的路徑（對三個月前比較）
+    long_idx = pd.bdate_range("2025-01-01", periods=400)
+    long = pd.DataFrame({"X": np.linspace(100.0, 200.0, 400)}, index=long_idx)
+    assert macro_dash.metric_series(long, "X", "pct").iloc[-1] < 20

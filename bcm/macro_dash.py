@@ -46,7 +46,15 @@ def _shift_by(s: pd.Series, offset) -> pd.Series:
 
 def _pct_over(s: pd.Series, offset) -> pd.Series:
     base = _shift_by(s, offset)
-    return ((s / base - 1) * 100).replace([np.inf, -np.inf], np.nan).dropna()
+    out = ((s / base - 1) * 100).replace([np.inf, -np.inf], np.nan).dropna()
+    if not out.empty or len(s) < 2:
+        return out
+    # 歷史還不足一個 offset 時（例如序列剛換資料來源），上面整條都會是
+    # 缺值，卡片就變成「無資料」—— 明明有資料只是還不夠長。
+    # 改以序列第一筆為基準，實際比較了多久由卡片照實標示。
+    s = s.dropna()
+    return ((s / s.iloc[0] - 1) * 100).replace(
+        [np.inf, -np.inf], np.nan).dropna()
 
 
 
