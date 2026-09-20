@@ -427,16 +427,6 @@ META["RATIO_OTC_TWSE"] = dict(
     how="上升＝投機氣氛濃、散戶資金活躍；下降＝資金集中到權值股，"
         "或外資主導的行情。兩者持續分歧通常是資金輪動而非全面多空。")
 
-META["RATIO_HY_IG"] = dict(
-    full="高收益債／投資級債（HYG ÷ LQD）",
-    src="Yahoo Finance · HYG、LQD",
-    formula="高收益債 ETF ÷ 投資級公司債 ETF × 100",
-    what="信用市場的風險偏好。兩者都受利率影響，相除之後利率因素大致抵銷，"
-         "剩下的主要是<b>信用風險溢酬</b>的變化。",
-    how="上升＝願意承擔信用風險換取收益；下降＝信用市場轉趨保守。"
-        "它與高收益債利差（BAMLH0A0HYM2）講同一件事，"
-        "但這個是每日的市場價格，利差則有一天的公布落差。")
-
 META["RATIO_CYC_DEF"] = dict(
     full="循環股／防禦股（XLI ÷ XLU）",
     src="Yahoo Finance · XLI、XLU",

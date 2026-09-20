@@ -659,3 +659,68 @@ def test_nfci_summary_reads_all_four_together():
 
     # 缺資料時不硬掰
     assert macro_dash.nfci_summary(pd.DataFrame(index=idx)) == ""
+
+
+def test_ratio_attribution_distinguishes_lagging_from_falling():
+    """比值跌不代表分子在跌 —— 這兩件事的意義完全不同。
+
+    實例：等權／市值 −0.74%，但等權 +1.50%、市值 +2.26%。只給比值的話，
+    「漲勢集中在少數權值股」會讀成有人在賣，其實兩邊都在漲。
+    """
+    idx = pd.bdate_range("2025-01-01", periods=300)
+
+    def mk(num_end, den_end):
+        return pd.DataFrame({"RSP": np.linspace(100, num_end, 300),
+                             "SPY": np.linspace(100, den_end, 300),
+                             "RATIO_BREADTH": np.linspace(100, num_end, 300)
+                             / np.linspace(100, den_end, 300) * 100},
+                            index=idx)
+
+    # 兩邊都漲，只是分子慢 → 不該說成資金流出
+    both_up = mk(120, 130)
+    note = macro_dash.ratio_attribution(both_up, "RATIO_BREADTH",
+                                        "等權重／市值加權", {})
+    assert note.startswith("兩邊都漲") and "落後" in note
+    import re
+
+    def note_of(html):
+        m = re.search(r'<div class="m-note">(.*?)</div>', html, re.S)
+        return m.group(1) if m else ""
+
+    html = macro_dash.metric_card(both_up, "等權重／市值加權",
+                                  "RATIO_BREADTH", "price", None)
+    # 只看卡片的判讀行；詞彙說明（折疊區）本來就會完整解釋兩個方向
+    assert "兩邊都漲" in note_of(html)
+    assert "漲勢集中在少數權值股" not in note_of(html), \
+        "兩邊同向時不可套用資金流出的講法"
+
+    # 分子真的在跌 → 維持原本的判讀句，並附上數字
+    diverge = mk(85, 130)
+    note2 = macro_dash.ratio_attribution(diverge, "RATIO_BREADTH",
+                                         "等權重／市值加權", {})
+    assert not note2.startswith("兩邊都")
+    assert "漲勢集中在少數權值股" in note_of(macro_dash.metric_card(
+        diverge, "等權重／市值加權", "RATIO_BREADTH", "price", None))
+
+    # 兩邊都跌
+    both_down = mk(85, 70)
+    assert macro_dash.ratio_attribution(both_down, "RATIO_BREADTH",
+                                        "等權重／市值加權", {}).startswith("兩邊都跌")
+
+
+def test_header_states_that_some_series_are_older():
+    """單寫一個資料日期會誤導：同一頁上的觀測日其實不一樣。"""
+    idx = pd.bdate_range(end="2026-09-18", periods=50)
+    panel = pd.DataFrame({"A": 1.0, "B": 2.0}, index=idx)
+    spec = [("甲", "A", "daily"), ("乙", "B", "monthly")]
+
+    lo = pd.Series({"A": pd.Timestamp("2026-09-18"),
+                    "B": pd.Timestamp("2026-07-01")})
+    note = macro_dash.asof_note(panel, lo, spec)
+    assert "2026-09-18" in note and "1 項較舊" in note and "2026-07-01" in note
+
+    # 全部同日時不要多嘴
+    same = pd.Series({"A": pd.Timestamp("2026-09-18"),
+                      "B": pd.Timestamp("2026-09-18")})
+    assert macro_dash.asof_note(panel, same, spec) == "資料日期 2026-09-18"
+    assert macro_dash.asof_note(panel, None, spec) == "資料日期 2026-09-18"

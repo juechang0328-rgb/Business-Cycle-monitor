@@ -33,6 +33,20 @@ jobs:
       - name: 安裝相依套件
         run: pip install -r requirements.txt
 
+      # 面板快取不進版控：它 1.2MB、每天整檔重寫，版本庫會無止境長大。
+      # 這份資料<b>完全可以重建</b>（FRED／Yahoo 都給完整歷史），
+      # 真正不可重建的只有櫃買指數，那一份存在 data/twoii_history.csv
+      # 並且有進版控。快取掉了最多就是這次跑慢一點。
+      - name: 還原資料快取
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/panel.csv.gz
+            data/panel.projections.csv.gz
+            data/panel.lastobs.csv.gz
+          key: panel-${{ github.run_id }}
+          restore-keys: panel-
+
       - name: 執行測試
         run: python -m pytest tests/ -q
 
@@ -48,18 +62,18 @@ jobs:
         continue-on-error: true
         run: python validate.py --cache data/panel.csv.gz
 
-      - name: 寫回資料快取
-        # 即使前面步驟失敗也要寫回：抓取本身可能已經成功，
-        # 不該因為下游的程式錯誤就把辛苦抓到的歷史資料丟掉
+      - name: 寫回櫃買歷史種子檔
+        # 只有這一份需要進版控：櫃買中心的 API 只給當月，
+        # 今天沒存下來明天就補不回來。每天大約長 30 bytes。
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/
+          git add data/twoii_history.csv
           if git diff --staged --quiet; then
-            echo "資料無變動，略過提交"
+            echo "櫃買歷史無新增，略過提交"
           else
-            git commit -m "chore: 更新資料快取 $(date -u +%Y-%m-%d)"
+            git commit -m "chore: 櫃買歷史 $(date -u +%Y-%m-%d)"
             git push
           fi
 

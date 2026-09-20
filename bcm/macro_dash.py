@@ -248,13 +248,49 @@ RATIO_READING = {
                           "往價值與防禦類股輪動"),
     "RATIO_OTC_TWSE":    ("台股投機氣氛升溫，中小型股較強",
                           "台股資金集中到權值股"),
-    "RATIO_HY_IG":       ("願意承擔信用風險換取收益",
-                          "信用市場轉趨保守"),
     "RATIO_CYC_DEF":     ("市場押景氣擴張",
                           "往防禦類股撤退"),
     "RATIO_BREADTH":     ("上漲的家數變廣",
                           "漲勢集中在少數權值股"),
 }
+
+
+def ratio_attribution(panel: pd.DataFrame, code: str, label: str,
+                      snap: dict) -> str | None:
+    """比值的變化是分子造成的還是分母造成的。
+
+    比值跌不代表分子在跌。實例：等權／市值 −0.74%，但等權 +1.50%、
+    市值 +2.26% —— 兩邊都在漲，只是一個漲得慢。只給比值的話，
+    「漲勢集中在少數權值股」會讀成有人在賣，其實沒有。
+    """
+    spec = derived.DERIVED.get(code)
+    if not spec or len(spec.get("requires", [])) != 2:
+        return None
+    num, den = spec["requires"]
+    parts = [x.strip() for x in label.replace("／", "/").split("/")]
+    if len(parts) != 2:
+        parts = [num, den]
+
+    def pct(c):
+        s = panel[c].dropna() if c in panel.columns else pd.Series(dtype=float)
+        if s.empty:
+            return None
+        base = s.loc[:s.index[-1] - pd.DateOffset(months=3)]
+        if base.empty or not base.iloc[-1]:
+            return None
+        return (s.iloc[-1] / base.iloc[-1] - 1) * 100
+
+    a, b = pct(num), pct(den)
+    if a is None or b is None:
+        return None
+    fa, fb = f"{a:+.2f}%", f"{b:+.2f}%"
+    if a > 0 and b > 0:
+        rel = "落後" if a < b else "領先"
+        return f"兩邊都漲，{parts[0]} {fa} {rel} {parts[1]} {fb}"
+    if a < 0 and b < 0:
+        rel = "跌得更多" if a < b else "跌得較少"
+        return f"兩邊都跌，{parts[0]} {fa} 比 {parts[1]} {fb} {rel}"
+    return f"{parts[0]} {fa}、{parts[1]} {fb}"
 
 
 def history_rank(s: pd.Series, years: int = 5) -> tuple[float, str] | None:
@@ -323,8 +359,9 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         chg_lab = f"近{span}天" if span >= 2 else "較前一筆"
 
     note, lvl = threshold_note(code, cur, th)
-    # 方向本身不帶好壞：VIX 與信用利差上升是壞事，用綠漲紅跌會傳達相反意思。
-    # 因此變化值用中性色，只以箭頭表示方向，語意由門檻徽章承擔。
+    # 漲跌色只用在「價格類」（股價指數、比值）—— 台灣慣例紅漲綠跌。
+    # 其餘一律中性色：VIX、信用利差、失業率這些上升是壞事，
+    # 套用漲跌色會傳達相反的意思，語意交給門檻徽章承擔。
     # 依四捨五入後的顯示值判斷方向，避免出現「▲ +0.00」這種自相矛盾的組合
     if mode == "price":
         shown_chg = round(pct, 2)
@@ -333,6 +370,9 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
             raw_scale[0] if raw_scale else 1)
         shown_chg = round(chg * _sc, 2)
     arrow = "▲" if shown_chg > 0 else ("▼" if shown_chg < 0 else "—")
+    dir_cls = ""
+    if mode == "price" and shown_chg:
+        dir_cls = " up" if shown_chg > 0 else " down"
 
     # 比值卡片：徽章顯示它在自己歷史區間的位置，下方補一行白話判讀。
     # 只給一個比值的絕對數字，讀者無從判斷現在算高還是低、錢往哪流。
@@ -344,10 +384,17 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
             rank_badge = (f'<span class="m-badge normal" '
                           f'title="現值落在近 5 年區間的第 {pct_rank:.0f} 百分位">'
                           f'5年{band} {pct_rank:.0f}%</span>')
+        attr = ratio_attribution(panel, code, name, snap)
         up, down = RATIO_READING[code]
         if shown_chg:
-            reading = (f'<div class="m-note">'
-                       f'{up if shown_chg > 0 else down}</div>')
+            # 兩邊同向時，「誰快誰慢」本身就是結論，不要再套上
+            # 「資金流出」那種講法 —— 那會讓人以為有人在賣。
+            if attr and attr.startswith("兩邊都"):
+                reading = f'<div class="m-note">{attr}</div>'
+            else:
+                head = up if shown_chg > 0 else down
+                tail = f'<br><span class="m-sub2">{attr}</span>' if attr else ""
+                reading = f'<div class="m-note">{head}{tail}</div>'
 
     badge = (f'<span class="m-badge {lvl}">{_esc(note)}</span>' if note
              else rank_badge)
@@ -355,7 +402,7 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         f'<div class="mcard">'
         f'  <div class="m-head"><span class="m-name">{_esc(name)}</span>{badge}</div>'
         f'  <div class="m-val">{cur_disp}</div>'
-        f'  <div class="m-chg"><span class="m-arrow">{arrow}</span>{chg_disp}'
+        f'  <div class="m-chg{dir_cls}"><span class="m-arrow">{arrow}</span>{chg_disp}'
         f'<span class="m-chg-lab">{chg_lab}</span>{zchip}</div>{reading}'
         f'  {sparkline(snap["series"], thresholds=th)}'
         f'  <div class="m-sub">{obs_date}　{_esc(code)}</div>'
@@ -465,6 +512,78 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
 
 
 # 少數區塊光看數字判讀不出來，在標題下補一行說明它能回答什麼問題。
+def overview_tiles(panel: pd.DataFrame, cfg, health_summary: dict) -> str:
+    """頁首總覽：四件事一眼看完，不用捲頁。
+
+    下面 60 幾張卡是等權重平舖的，要捲很久才知道今天該注意什麼。
+    這一列只回答「現在什麼狀態」，每格都對應下方某個區塊的結論。
+    """
+    tiles = []
+
+    shape = classify_curve(_curve_at(panel, panel.index[-1]))
+    if shape and shape[0]:
+        tiles.append(("殖利率曲線", shape[0], ""))
+
+    nfci = metric_snapshot(panel, "NFCI", "level")
+    if nfci["ok"]:
+        v = nfci["current"]
+        state = "寬鬆" if v < 0 else "緊縮"
+        deg = "明顯" if abs(v) > 0.4 else ("略為" if abs(v) > 0.1 else "接近平均")
+        tiles.append(("金融條件",
+                      state if deg == "接近平均" else f"{deg}{state}",
+                      "接近長期平均" if deg == "接近平均" else f"NFCI {v:+.2f}"))
+
+    # 風險偏好：小型股／大型股的方向就是最直接的代理
+    risk = metric_snapshot(panel, "RATIO_SMALL_LARGE", "price")
+    if risk["ok"] and risk["prev"]:
+        pct = (risk["current"] / risk["prev"] - 1) * 100
+        tiles.append(("風險偏好",
+                      "偏好小型股" if pct > 0 else "退向大型股",
+                      f"小型／大型 {pct:+.1f}%"))
+
+    vix = metric_snapshot(panel, "^VIX", "level")
+    if vix["ok"]:
+        v = vix["current"]
+        tiles.append(("波動",
+                      "低" if v < 15 else ("高" if v > 25 else "常態"),
+                      f"VIX {v:.1f}"))
+
+    ok, total = health_summary.get("ok", 0), health_summary.get("total", 0)
+    tiles.append(("資料", f"{ok}/{total}",
+                  "全部正常" if ok == total else "有項目異常"))
+
+    cells = "".join(
+        f'<div class="tile"><div class="tile-k">{_esc(k)}</div>'
+        f'<div class="tile-v">{_esc(v)}</div>'
+        f'<div class="tile-s">{_esc(sub)}</div></div>'
+        for k, v, sub in tiles)
+    return f'<section class="tiles">{cells}</section>' if cells else ""
+
+
+def asof_note(panel: pd.DataFrame, last_obs: pd.Series | None,
+              hspec: list[tuple]) -> str:
+    """頁首的資料日期。
+
+    單寫一個日期會誤導：同一頁上的序列觀測日不一樣（台股比美股早、
+    月頻資料停在上個月），實測混了 10 種日期。這裡只保證「最新的那天」，
+    並說明有多少項比它舊，細節看各卡片自己的日期。
+    """
+    newest = panel.index[-1].date()
+    if last_obs is None or not len(last_obs):
+        return f"資料日期 {newest}"
+    codes = {c for _, c, _ in hspec} if hspec else set(last_obs.index)
+    dates = last_obs[last_obs.index.isin(codes)].dropna()
+    if dates.empty:
+        return f"資料日期 {newest}"
+    cut = pd.Timestamp(newest)
+    older = int((dates < cut).sum())
+    if not older:
+        return f"資料日期 {newest}"
+    oldest = dates.min().date()
+    return (f"資料日期 {newest}　·　其中 {older} 項較舊（最早 {oldest}），"
+            f"以各卡片標示為準")
+
+
 def nfci_summary(panel: pd.DataFrame) -> str:
     """NFCI 四項的綜合判讀。
 
@@ -547,6 +666,33 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
 
 # 游標查值：全部在瀏覽器裡跑，不需要伺服器。
 # 資料已嵌在每個 <svg> 的 data-d / data-v 屬性裡。
+# 主題切換：自動（跟隨系統）→ 淺色 → 深色 → 自動。
+# 純 localStorage，不需要伺服器；擋掉 localStorage 時就永遠是「自動」。
+THEME_JS = """
+<script>
+(function(){
+  var btn = document.getElementById('theme'), lab = document.getElementById('themelab');
+  if(!btn) return;
+  var order = ['auto','light','dark'], name = {auto:'自動', light:'淺色', dark:'深色'};
+  function read(){
+    try{ var t = localStorage.getItem('theme'); return (t==='light'||t==='dark')?t:'auto'; }
+    catch(e){ return 'auto'; }
+  }
+  function apply(t){
+    if(t === 'auto') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = t;
+    lab.textContent = name[t];
+    try{ t==='auto' ? localStorage.removeItem('theme') : localStorage.setItem('theme', t); }
+    catch(e){}
+  }
+  apply(read());
+  btn.addEventListener('click', function(){
+    apply(order[(order.indexOf(read()) + 1) % order.length]);
+  });
+})();
+</script>
+"""
+
 HOVER_JS = """
 <div id="tip"></div>
 <script>
@@ -633,6 +779,10 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .wrap{max-width:1180px;margin:0 auto;padding:26px 16px 60px}
 header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
 .nav{margin-left:auto}
+.themebtn{margin-left:auto;background:var(--panel);color:var(--muted);
+ border:1px solid var(--line);border-radius:99px;padding:4px 12px;
+ font:inherit;font-size:12px;cursor:pointer;line-height:1.6}
+.themebtn:hover{color:var(--ink);border-color:var(--muted)}
 .nav a{color:var(--accent);text-decoration:none;font-size:13px}
 .nav a:hover{text-decoration:underline}
 h1{font-size:22px;margin:0;letter-spacing:.3px}
@@ -640,6 +790,14 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
 .lede{color:var(--muted);font-size:13.5px;margin:0 0 18px;max-width:80ch}
 
 /* 健康檢查 */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+ gap:10px;margin:0 0 16px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:11px;
+ padding:11px 13px}
+.tile-k{font-size:11.5px;color:var(--muted)}
+.tile-v{font-size:19px;font-weight:700;line-height:1.3;
+ font-variant-numeric:tabular-nums}
+.tile-s{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .brief{background:var(--panel);border:1px solid var(--line);
  border-left:5px solid var(--accent);border-radius:12px;
  padding:15px 18px 13px;margin-bottom:18px}
@@ -716,10 +874,15 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
  border:1px solid currentColor;opacity:.9}
 .m-badge.calm{color:var(--ok)} .m-badge.normal{color:var(--muted)}
 .m-badge.warn{color:var(--warn)} .m-badge.alert{color:var(--alert)}
-.m-val{font-size:23px;font-weight:700;line-height:1.15;letter-spacing:-.4px}
+.m-val{font-size:23px;font-weight:700;line-height:1.15;letter-spacing:-.4px;
+ font-variant-numeric:tabular-nums}
 .m-chg{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* 紅漲綠跌（台灣慣例），只套用在價格類。沿用狀態色票，不新增顏色：
+   兩者在淺／深色都 ≥4.5:1，且紅綠之外還有箭頭，色盲讀者不必靠顏色分辨。 */
+.m-chg.up{color:var(--alert)} .m-chg.down{color:var(--ok)}
 .m-arrow{margin-right:4px;font-size:9px;vertical-align:1px}
 .m-chg-lab{margin-left:6px;opacity:.7;font-size:11px}
+.m-sub2{opacity:.75;font-variant-numeric:tabular-nums}
 .m-note{font-size:11.5px;color:var(--muted);line-height:1.5;margin:4px 0 1px;
  padding-left:8px;border-left:2px solid var(--line)}
 .spark{width:100%;height:40px;display:block;margin:4px 0 2px}
@@ -791,14 +954,28 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>總經儀表板</title><style>{CSS}</style></head><body><div class="wrap">
+<title>總經儀表板</title><style>{CSS}</style>
+<script>
+// 在畫面繪製之前就套用主題，否則深色模式的人會先閃一下白底。
+// 這段必須留在 <head> 且不可非同步載入。
+(function(){{
+  try{{
+    var t = localStorage.getItem('theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  }}catch(e){{}}   // 無痕視窗會擋 localStorage，擋掉就跟隨系統設定
+}})();
+</script>
+</head><body><div class="wrap">
 
 <header>
   <h1>總經儀表板</h1>
-  <span class="asof">資料日期 {asof.date()}　·　產生於 {datetime.now():%Y-%m-%d %H:%M}</span>
+  <span class="asof">{asof_note(panel, last_obs, hspec)}　·　產生於 {datetime.now():%Y-%m-%d %H:%M}</span>
+  <button id="theme" class="themebtn" type="button"
+          aria-label="切換淺色／深色">◐ <span id="themelab">自動</span></button>
 </header>
 
 {demo_banner}
+{overview_tiles(panel, cfg, summary)}
 {briefing.render(panel, cfg, health_df=h)}
 {health_panel(h, summary, unavailable, skipped or {})}
 {groups_html(panel, groups,
@@ -807,7 +984,7 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
              fixed_order=a.get("fixed_order"), last_obs=last_obs)}
 
 
-</div>{HOVER_JS}</body></html>"""
+</div>{HOVER_JS}{THEME_JS}</body></html>"""
 
 
 # ------------------------------------------------------- 變化幅度標準化排序

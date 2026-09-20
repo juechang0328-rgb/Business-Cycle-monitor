@@ -354,7 +354,6 @@ MACRO_GROUPS = [
         ("小型股／大型股",   "RATIO_SMALL_LARGE", "price", None),
         ("納斯達克／標普",   "RATIO_NDX_SPX",     "price", None),
         ("櫃買／加權",       "RATIO_OTC_TWSE",    "price", None),
-        ("高收益債／投資級", "RATIO_HY_IG",       "price", None),
         ("循環股／防禦股",   "RATIO_CYC_DEF",     "price", None),
         ("等權重／市值加權", "RATIO_BREADTH",     "price", None),
     ]),
