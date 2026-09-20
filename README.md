@@ -13,8 +13,19 @@
 2. 進 **Actions** 分頁，若提示啟用工作流程就按啟用
 3. 進 **Actions** → 選「景氣循環儀表板」→ **Run workflow** 手動跑第一次
 
-跑完後網址是 `https://<你的帳號>.github.io/Business-Cycle-monitor/`。
-之後每週一至週五 22:00 UTC（美股收盤後約兩小時）自動更新。
+跑完後會有兩個頁面：
+
+| 網址 | 內容 |
+|---|---|
+| `https://<帳號>.github.io/Business-Cycle-monitor/` | 景氣循環儀表板 |
+| `https://<帳號>.github.io/Business-Cycle-monitor/macro.html` | **總經儀表板**（每日重點、55 張指標卡、殖利率曲線） |
+
+兩頁互相有連結。
+之後**台北時間週二至週六早上 7:00** 自動更新
+（cron 設定為 `0 23 * * 1-5` UTC，UTC+8 換算後即為台北隔日 07:00）。
+
+週一早上沒有更新是正常的 —— 美股週末休市，沒有新資料。
+另外 GitHub 的排程在尖峰時段可能延遲數十分鐘，不保證準點。
 
 排程定義在 [`.github/workflows/dashboard.yml`](.github/workflows/dashboard.yml)，
 要改時間就改裡面的 `cron`。
