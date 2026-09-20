@@ -460,3 +460,31 @@ def test_balance_sheet_cards_show_readable_units():
     expect = (raw.iloc[-1] - raw.iloc[-64]) * 1e-3
     assert f"{expect:+,.2f}" in tga
     assert "▲" in tga                     # 上升，且與顯示值同號
+
+
+def test_short_history_does_not_claim_three_months():
+    """序列還短時（剛換資料來源）不能沿用「近3個月」的標籤。
+
+    櫃買指數改由櫃買中心取得後，一開始只有當月十幾筆；沿用原標籤
+    會把三天的變化講成三個月的變化。
+    """
+    idx = pd.bdate_range("2026-09-01", periods=14)
+    short = pd.DataFrame({"^TWOII": np.linspace(402.0, 401.0, 14)}, index=idx)
+    html = macro_dash.metric_card(short, "櫃買OTC", "^TWOII", "level", None)
+    assert "近3個月" not in html
+    assert "近" in html and "天" in html
+
+    # 歷史夠長時維持原本的標籤
+    long_idx = pd.bdate_range("2025-01-01", periods=300)
+    long = pd.DataFrame({"^TWOII": np.linspace(300.0, 400.0, 300)},
+                        index=long_idx)
+    assert "近3個月" in macro_dash.metric_card(
+        long, "櫃買OTC", "^TWOII", "level", None)
+
+
+def test_span_days_reports_actual_window():
+    idx = pd.bdate_range("2026-09-01", periods=14)
+    panel = pd.DataFrame({"X": np.arange(14.0)}, index=idx)
+    snap = macro_dash.metric_snapshot(panel, "X", "level")
+    assert snap["span_days"] < 20            # 只有兩週多的資料
+    assert snap["change"] < 14               # 不是頭尾相減

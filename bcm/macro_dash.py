@@ -74,9 +74,15 @@ def metric_snapshot(panel: pd.DataFrame, code: str, mode: str) -> dict:
     cur = float(s.iloc[-1])
     # 變化基準：日頻序列比 3 個月前，低頻序列比前一個可得值
     lookback = 63 if len(s) > 80 else max(len(s) // 4, 1)
-    prev = float(s.iloc[-lookback - 1]) if len(s) > lookback else float(s.iloc[0])
+    if len(s) > lookback:
+        prev, base_date = float(s.iloc[-lookback - 1]), s.index[-lookback - 1]
+    else:
+        prev, base_date = float(s.iloc[0]), s.index[0]
     return {"ok": True, "series": s, "current": cur, "prev": prev,
-            "change": cur - prev, "last_date": s.index[-1]}
+            "change": cur - prev, "last_date": s.index[-1],
+            # 實際比較了多久。序列還短時（例如剛換資料來源）不能沿用
+            # 「近3個月」這個標籤，那會把三天的變化講成三個月的變化。
+            "span_days": int((s.index[-1] - base_date).days)}
 
 
 # ------------------------------------------------------------------ 迷你圖
@@ -253,6 +259,12 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         else snap["last_date"]
     obs_date = pd.Timestamp(obs).date()
 
+    # 歷史不足 3 個月時照實說比較了幾天，不要沿用「近3個月」的標籤
+    span = snap.get("span_days")
+    chg_lab = CHANGE_LABEL.get(mode, "近3個月")
+    if span is not None and span < 70:
+        chg_lab = f"近{span}天" if span >= 2 else "較前一筆"
+
     note, lvl = threshold_note(code, cur, th)
     # 方向本身不帶好壞：VIX 與信用利差上升是壞事，用綠漲紅跌會傳達相反意思。
     # 因此變化值用中性色，只以箭頭表示方向，語意由門檻徽章承擔。
@@ -267,7 +279,7 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         f'  <div class="m-head"><span class="m-name">{_esc(name)}</span>{badge}</div>'
         f'  <div class="m-val">{cur_disp}</div>'
         f'  <div class="m-chg"><span class="m-arrow">{arrow}</span>{chg_disp}'
-        f'<span class="m-chg-lab">{CHANGE_LABEL.get(mode, "近3個月")}</span>{zchip}</div>'
+        f'<span class="m-chg-lab">{chg_lab}</span>{zchip}</div>'
         f'  {sparkline(snap["series"], thresholds=th)}'
         f'  <div class="m-sub">{obs_date}　{_esc(code)}</div>'
         f'  {glossary_block(code)}'

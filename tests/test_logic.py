@@ -643,6 +643,9 @@ def test_prefetch_runs_before_batch_and_beats_proxy(monkeypatch):
     idx = pd.bdate_range("2026-01-05", periods=5)
     alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
 
+    # 這個測試要驗的是 Yahoo 路徑，原生來源必須擋掉 —— 否則在有網路的
+    # 環境（CI）會真的連上櫃買中心，測試就變成在測網路而不是測邏輯
+    monkeypatch.setattr(sources, "NATIVE_SOURCE", {})
     monkeypatch.setattr(sources, "fetch_yahoo_chart",
                         lambda sym, start="2005-01-01", timeout=20, retries=4:
                         pd.Series([200.0] * 5, index=idx) if sym == "^TWOII"
@@ -667,6 +670,7 @@ def test_prefetch_failure_leaves_batch_result_alone(monkeypatch):
     def boom(sym, start="2005-01-01", timeout=20, retries=4):
         raise RuntimeError("HTTP Error 429: Too Many Requests")
 
+    monkeypatch.setattr(sources, "NATIVE_SOURCE", {})
     monkeypatch.setattr(sources, "fetch_yahoo_chart", boom)
     pre = sources.prefetch_aliases(alias, "2026-01-01")
     assert pre == {}
