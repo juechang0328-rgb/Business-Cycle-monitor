@@ -656,3 +656,45 @@ def test_merge_drops_column_when_data_source_changed(tmp_path):
     path = tmp_path / "panel.csv"
     save_cache(merged, str(path))
     assert load_cache(str(path)).attrs["alias_source"]["^TWOII"] == "^TWOII"
+
+
+def test_prefetch_runs_before_batch_and_beats_proxy(monkeypatch):
+    """預抓必須蓋過批次下載抓到的備援代理。
+
+    Yahoo 的限流是自己觸發的：把 chart 呼叫放在大批下載之後，4 次重試
+    全部 429。第一順位（真正的指數）值得用還沒被用掉的配額去換。
+    """
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)
+    alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
+
+    monkeypatch.setattr(sources, "fetch_yahoo_chart",
+                        lambda sym, start="2005-01-01", timeout=20, retries=4:
+                        pd.Series([200.0] * 5, index=idx) if sym == "^TWOII"
+                        else pd.Series(dtype=float))
+    pre = sources.prefetch_aliases(alias, "2026-01-01")
+    assert set(pre) == {"^TWOII"}
+    assert sources.ALIAS_SOURCE["^TWOII"] == "^TWOII"
+
+    # 批次下載抓到的是代理，預抓的指數要蓋過去
+    close = pd.DataFrame({"^TWOII": 46.0, "^GSPC": 7000.0}, index=idx)
+    out = sources.apply_prefetched(close, pre)
+    assert (out["^TWOII"] == 200.0).all()
+    assert (out["^GSPC"] == 7000.0).all()
+
+
+def test_prefetch_failure_leaves_batch_result_alone(monkeypatch):
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-01-05", periods=5)
+    alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
+
+    def boom(sym, start="2005-01-01", timeout=20, retries=4):
+        raise RuntimeError("HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(sources, "fetch_yahoo_chart", boom)
+    pre = sources.prefetch_aliases(alias, "2026-01-01")
+    assert pre == {}
+    close = pd.DataFrame({"^TWOII": 46.0}, index=idx)
+    assert (sources.apply_prefetched(close, pre)["^TWOII"] == 46.0).all()

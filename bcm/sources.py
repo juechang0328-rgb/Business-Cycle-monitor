@@ -135,6 +135,35 @@ def resolve_aliases(tickers: Iterable[str]) -> tuple[list[str], dict[str, list[s
     return out, alias
 
 
+def prefetch_aliases(alias: dict[str, list[str]],
+                     start: str) -> dict[str, pd.Series]:
+    """在大批下載之前，先用 chart 端點取第一順位代號。"""
+    out: dict[str, pd.Series] = {}
+    for canon, cands in alias.items():
+        if not cands:
+            continue
+        try:
+            s = fetch_yahoo_chart(cands[0], start=start)
+        except Exception as e:
+            print(f"  · 預抓 {cands[0]} 失敗：{e}")
+            continue
+        if not s.empty:
+            out[canon] = s
+            ALIAS_SOURCE[canon] = cands[0]
+            print(f"  Yahoo：{canon} 預抓成功（{len(s)} 筆，"
+                  f"起自 {s.index[0].date()}）")
+    return out
+
+
+def apply_prefetched(close: pd.DataFrame,
+                     pre: dict[str, pd.Series]) -> pd.DataFrame:
+    """把預抓到的序列寫回面板，覆蓋批次下載可能取到的備援代理。"""
+    for canon, s in pre.items():
+        close = close.reindex(close.index.union(s.index))
+        close[canon] = s.reindex(close.index)
+    return close
+
+
 def pick_alias(close: pd.DataFrame,
                alias: dict[str, list[str]]) -> tuple[pd.DataFrame, dict[str, int]]:
     """每組候選代號取第一個有資料者，更名為正式代號，其餘候選欄位丟掉。
@@ -211,6 +240,13 @@ def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
     import yfinance as yf
 
     tickers, alias = resolve_aliases(tickers)
+
+    # 先打 chart 端點，再做 yfinance 的大批下載。
+    # 順序是關鍵：Yahoo 的限流是我們自己觸發的 —— 前一版把 chart 放在批次
+    # 下載之後，結果 4 次重試全部 429。第一順位（真正的指數）值得用
+    # 還沒被用掉的配額去換。
+    pre = prefetch_aliases(alias, start)
+
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
@@ -223,7 +259,11 @@ def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
                 close = close.to_frame(tickers[0])
             close.columns = [str(c) for c in close.columns]
             close, chosen = pick_alias(close.sort_index(), alias)
-            close = fill_missing_via_chart(close, alias, start, chosen)
+            close = apply_prefetched(close, pre)
+            # 預抓沒成功的才再試一次（此時配額多半已經用完，但成本很低）
+            close = fill_missing_via_chart(
+                close, {k: v for k, v in alias.items() if k not in pre},
+                start, chosen)
             close.attrs["alias_source"] = dict(ALIAS_SOURCE)
             return close
         except Exception as e:  # 網路波動時退避重試
