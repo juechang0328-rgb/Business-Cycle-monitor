@@ -222,22 +222,67 @@ def _tpex_rows(obj) -> list:
     return []
 
 
+# OpenAPI 目錄：候選端點全部猜錯時，改用站方自己的 swagger 清單找出
+# 正確的資料集名稱。硬猜網址的問題是失敗了也學不到東西；讀目錄至少能
+# 把「站方到底提供哪些資料集」印出來，下一步才有依據。
+TPEX_CATALOGS = [
+    "https://www.tpex.org.tw/openapi/swagger.json",
+    "https://www.tpex.org.tw/openapi/v1/swagger.json",
+    "https://www.tpex.org.tw/openapi/swagger/v1/swagger.json",
+]
+
+
+def discover_tpex_index_paths() -> list[str]:
+    """從 OpenAPI 目錄找出可能是「指數」的資料集路徑。"""
+    for cat in TPEX_CATALOGS:
+        code, obj, peek = _http_json(cat)
+        if not isinstance(obj, dict):
+            print(f"  · TPEx 目錄 {cat} 讀不到（HTTP {code}）：{peek[:80]}")
+            continue
+        paths = obj.get("paths")
+        if not isinstance(paths, dict):
+            continue
+        hits = [p for p in paths
+                if "index" in p.lower() or "指數" in str(paths[p])]
+        print(f"  TPEx 目錄共 {len(paths)} 個資料集，"
+              f"疑似指數的有 {len(hits)} 個：{hits[:8]}")
+        return hits
+    return []
+
+
 def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
-    """從櫃買中心取櫃買指數收盤。逐一試候選端點，成功即回傳。"""
+    """從櫃買中心取櫃買指數收盤。先試已知端點，失敗則查 OpenAPI 目錄。"""
     today = pd.Timestamp.today().normalize()
     roc = f"{today.year - 1911}/{today.month:02d}"
-    for name, tpl in TPEX_ENDPOINTS:
-        url = tpl.format(ymd=today.strftime("%Y%m%d"), roc=roc)
+    tried = [(n, t.format(ymd=today.strftime("%Y%m%d"), roc=roc))
+             for n, t in TPEX_ENDPOINTS]
+
+    def attempt(name: str, url: str) -> pd.Series | None:
         code, obj, peek = _http_json(url)
         rows = _tpex_rows(obj) if obj is not None else []
         if not rows:
-            print(f"  · TPEx {name} 無法使用（HTTP {code}）：{peek[:120]}")
-            continue
-        s = _parse_tpex(rows)
-        if s is not None and not s.empty:
-            print(f"  TPEx：櫃買指數取自 {name}（{len(s)} 筆）")
-            return s.loc[start:]
-        print(f"  · TPEx {name} 格式無法解析：{str(rows[0])[:120]}")
+            print(f"  · TPEx {name} 無法使用（HTTP {code}）：{peek[:110]}")
+            return None
+        out = _parse_tpex(rows)
+        if out is None or out.empty:
+            print(f"  · TPEx {name} 格式無法解析：{str(rows[0])[:110]}")
+            return None
+        return out
+
+    for name, url in tried:
+        got = attempt(name, url)
+        if got is not None:
+            print(f"  TPEx：櫃買指數取自 {name}（{len(got)} 筆）")
+            return got.loc[start:]
+
+    for path in discover_tpex_index_paths():
+        url = "https://www.tpex.org.tw/openapi" + path \
+            if path.startswith("/") else path
+        got = attempt(f"openapi{path}", url)
+        if got is not None:
+            print(f"  TPEx：櫃買指數取自 {path}（{len(got)} 筆）")
+            return got.loc[start:]
+
     raise RuntimeError("櫃買中心所有候選端點都取不到指數")
 
 
