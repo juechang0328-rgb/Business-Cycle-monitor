@@ -410,3 +410,36 @@ def test_cache_roundtrip_keeps_last_obs(tmp_path):
     merged = merge_panel(got, newer)
     m = last_obs_of(merged)
     assert m["B"] == idx[-1] and m["A"] == idx[-1]
+
+
+def test_publication_lag_overrides_prevent_false_delays():
+    """發布延遲因序列而異：核心PCE 落後兩個月是正常的，不該報成延遲。"""
+    from bcm import health
+
+    idx = pd.bdate_range("2026-01-01", "2026-09-18")
+    panel = pd.DataFrame({"PCEPILFE": 2.9, "UNRATE": 4.2}, index=idx)
+    lo = pd.Series({"PCEPILFE": pd.Timestamp("2026-07-01"),
+                    "UNRATE": pd.Timestamp("2026-07-01")})
+    h = health.check_panel(panel,
+                          [("核心PCE", "PCEPILFE", "monthly"),
+                           ("失業率", "UNRATE", "monthly")],
+                          asof=idx[-1], last_obs=lo)
+    by = h.set_index("代碼")["status"].to_dict()
+    # 同樣落後 79 天：核心PCE 屬正常，失業率則確實太久沒更新
+    assert by["PCEPILFE"] == "正常"
+    assert by["UNRATE"] == "延遲"
+
+
+def test_card_shows_true_observation_date_not_panel_date():
+    """卡片下緣的日期若用面板日期，月頻指標會看起來像今天剛公布。"""
+    idx = pd.bdate_range("2026-01-01", "2026-09-18")
+    panel = pd.DataFrame({"PCEPILFE": 2.9}, index=idx)
+    true_obs = pd.Timestamp("2026-07-01")
+
+    html = macro_dash.metric_card(panel, "核心PCE", "PCEPILFE", "level", None,
+                                  last_obs=true_obs)
+    assert "2026-07-01" in html
+    assert "2026-09-18" not in html
+    # 沒有紀錄時退回面板日期（維持原行為，不至於空白）
+    assert "2026-09-18" in macro_dash.metric_card(
+        panel, "核心PCE", "PCEPILFE", "level", None)

@@ -17,11 +17,25 @@ TOLERANCE_DAYS = {
     "quarterly": 135,
 }
 
+# 個別序列的容差覆寫。理由是「發布延遲」因序列而異，用頻率一刀切會誤判：
+# 容差至少要涵蓋「上一期的發布延遲 + 到下一期發布為止的整段空窗」。
+#   PCEPILFE  核心PCE：觀測日標在當月 1 日，約在次月底發布（≈60 天），
+#             下一期要再等 30 天 —— 正常狀態下最多可落後約 92 天。
+#   NEWORDER  核心資本財新訂單：次月中發布，同理約 80 天。
+#   DTWEXBGS  美元指數：資料本身是日頻，但隨 H.10 每週一整批發布，
+#             因此例行性地落後約一週。
+TOLERANCE_BY_CODE = {
+    "PCEPILFE": 95,
+    "NEWORDER": 85,
+    "DTWEXBGS": 10,
+}
+
 STATUS_ORDER = {"無資料": 0, "停更": 1, "延遲": 2, "正常": 3}
 
 
 def check_series(s: pd.Series, freq: str, asof: pd.Timestamp,
-                 last_obs: pd.Timestamp | None = None) -> dict:
+                 last_obs: pd.Timestamp | None = None,
+                 code: str | None = None) -> dict:
     """last_obs：該欄真正的最後觀測日。
 
     面板裡每一欄都被向前填補到最後一天，所以 `s.dropna().index[-1]` 永遠等於
@@ -45,7 +59,7 @@ def check_series(s: pd.Series, freq: str, asof: pd.Timestamp,
         return {"status": "延遲", "last": last, "age_days": age,
                 "n": int(valid.notna().sum()),
                 "detail": f"最後預測年度已過期 {age} 天，等待下次 SEP 更新"}
-    tol = TOLERANCE_DAYS.get(freq, 55)
+    tol = TOLERANCE_BY_CODE.get(code) or TOLERANCE_DAYS.get(freq, 55)
     if age > tol * 3:
         status, detail = "停更", f"已 {age} 天無新值（容許 {tol} 天）"
     elif age > tol:
@@ -75,9 +89,11 @@ def check_panel(panel: pd.DataFrame, specs: list[tuple],
                          "n": 0, "detail": "面板中沒有這個欄位",
                          "verified": False})
             continue
-        r = check_series(panel[code], freq, asof, last_obs=lo.get(code))
+        r = check_series(panel[code], freq, asof, last_obs=lo.get(code),
+                         code=code)
+        # 前瞻性序列不經過向前填補（它不在日頻面板裡），觀測日本來就是真的
         rows.append({"指標": name, "代碼": code, "頻率": freq, **r,
-                     "verified": code in lo.index})
+                     "verified": freq == "projection" or code in lo.index})
     df = pd.DataFrame(rows)
     df["_order"] = df["status"].map(STATUS_ORDER)
     return df.sort_values(["_order", "指標"]).drop(columns="_order")

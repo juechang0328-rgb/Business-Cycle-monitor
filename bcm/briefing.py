@@ -19,7 +19,8 @@ def _pct_or_pt(mode: str) -> str:
     return "pp" if mode in ("yoy", "m3ann", "pct") else ""
 
 
-def collect(panel: pd.DataFrame, cfg) -> dict:
+def collect(panel: pd.DataFrame, cfg,
+            health_df: pd.DataFrame | None = None) -> dict:
     """蒐集當天的重點事實。全部可回溯到具體數字。"""
     a = cfg.active()
     groups = a.get("groups", [])
@@ -62,7 +63,10 @@ def collect(panel: pd.DataFrame, cfg) -> dict:
     shape_prev = macro_dash.classify_curve(curve_prev)[0] if len(curve_prev) >= 4 else None
 
     # 4) 資料健康
-    h = health.check_panel(panel, a.get("health", []), asof=asof)
+    # 由呼叫端傳入已算好的結果：在這裡重算會少掉前瞻性序列與真實觀測日，
+    # 使健康的序列被誤報成異常（曾經因此在摘要裡誤標點陣圖）。
+    h = health.check_panel(panel, a.get("health", []), asof=asof) \
+        if health_df is None else health_df
     hsum = health.summarise(h)
 
     return {"asof": asof, "movers": movers, "crossings": crossings,
@@ -120,8 +124,9 @@ def sentences(facts: dict, top: int = 3) -> list[str]:
     return out
 
 
-def render(panel: pd.DataFrame, cfg) -> str:
-    facts = collect(panel, cfg)
+def render(panel: pd.DataFrame, cfg,
+           health_df: pd.DataFrame | None = None) -> str:
+    facts = collect(panel, cfg, health_df=health_df)
     lines = sentences(facts)
     body = "".join(f"<li>{s}</li>" for s in lines)
     return f"""

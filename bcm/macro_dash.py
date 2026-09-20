@@ -196,7 +196,8 @@ CHANGE_UNIT = {"level": "", "yoy": "pp", "m3ann": "pp", "pct": "pp"}
 
 
 def metric_card(panel: pd.DataFrame, name: str, code: str,
-                mode: str, th: dict | None, zscore: float | None = None) -> str:
+                mode: str, th: dict | None, zscore: float | None = None,
+                last_obs: pd.Timestamp | None = None) -> str:
     snap = metric_snapshot(panel, code, mode)
     if not snap["ok"]:
         return (f'<div class="mcard missing"><div class="m-name">{_esc(name)}</div>'
@@ -220,6 +221,12 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
     if zscore is not None and not np.isnan(zscore) and abs(zscore) >= ANOMALY_Z:
         zchip = (f'<span class="zchip">⚠ {abs(zscore):.1f}σ</span>')
 
+    # 卡片下緣的日期要是「真實觀測日」。面板每一欄都被向前填補到最後一個
+    # 營業日，直接用 snap["last_date"] 會讓月頻指標看起來像今天剛公布。
+    obs = last_obs if last_obs is not None and not pd.isna(last_obs) \
+        else snap["last_date"]
+    obs_date = pd.Timestamp(obs).date()
+
     note, lvl = threshold_note(code, cur, th)
     # 方向本身不帶好壞：VIX 與信用利差上升是壞事，用綠漲紅跌會傳達相反意思。
     # 因此變化值用中性色，只以箭頭表示方向，語意由門檻徽章承擔。
@@ -234,7 +241,7 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         f'  <div class="m-chg"><span class="m-arrow">{arrow}</span>{chg_disp}'
         f'<span class="m-chg-lab">{CHANGE_LABEL.get(mode, "近3個月")}</span>{zchip}</div>'
         f'  {sparkline(snap["series"], thresholds=th)}'
-        f'  <div class="m-sub">{snap["last_date"].date()}　{_esc(code)}</div>'
+        f'  <div class="m-sub">{obs_date}　{_esc(code)}</div>'
         f'  {glossary_block(code)}'
         f'</div>')
 
@@ -342,9 +349,11 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
 
 def groups_html(panel: pd.DataFrame, groups: list[tuple],
                 extra: dict[str, str] | None = None,
-                fixed_order: set[str] | None = None) -> str:
+                fixed_order: set[str] | None = None,
+                last_obs: pd.Series | None = None) -> str:
     extra = extra or {}
     fixed_order = fixed_order or set()
+    lo = last_obs if last_obs is not None else pd.Series(dtype="datetime64[ns]")
     out = []
     for title, items in groups:
         # 有內在順序的區塊（例如殖利率天期）維持宣告順序
@@ -355,7 +364,8 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
             z = change_zscore(snap["series"]) if snap["ok"] else float("nan")
             if not np.isnan(z) and abs(z) >= ANOMALY_Z:
                 n_anom += 1
-            cards.append(metric_card(panel, *it, zscore=z))
+            cards.append(metric_card(panel, *it, zscore=z,
+                                     last_obs=lo.get(it[1])))
         n_ok = sum(1 for it in items if metric_snapshot(panel, it[1], it[2])["ok"])
         anom = (f'<span class="grp-anom">⚠ {n_anom} 項變化異常</span>'
                 if n_anom else "")
@@ -605,12 +615,12 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
   上升不等於是好事，例如 VIX 與信用利差走高代表風險升高。
 </p>
 {demo_banner}
-{briefing.render(panel, cfg)}
+{briefing.render(panel, cfg, health_df=h)}
 {health_panel(h, summary, unavailable, skipped or {})}
 {groups_html(panel, groups,
              extra={"公債殖利率": yield_curve_svg(panel)
                     + dotplot_table(projections, panel)},
-             fixed_order=a.get("fixed_order"))}
+             fixed_order=a.get("fixed_order"), last_obs=last_obs)}
 
 <footer>
   <b>資料來源</b>　FRED 公開 CSV（免 API key）、Yahoo Finance。<br>
