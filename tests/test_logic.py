@@ -346,3 +346,98 @@ def test_all_nan_column_does_not_crash_rendering():
     assert "無資料" in text
     html = dashboard.render_html(result, gp, ip, panel, cfg)
     assert "無資料" in html
+
+
+# --------------------------------------------------------- 前瞻性序列汙染時間軸
+# 真實事故：FEDTARMD（FOMC 點陣圖）的觀測日標在被預測的年度（2029-01-01），
+# 面板的時間軸因此被拉長 596 個營業日，其他序列全被向前填補成一條平線。
+# 結果是儀表板上每一項的「近三個月變化」都顯示 0.00% —— 不報錯、不缺值，
+# 只是全部變成同一個數字。以下三個測試各自把一個環節釘住。
+
+def test_projection_column_does_not_extend_timeline():
+    from bcm.sources import split_projections, to_business_days
+
+    real = pd.bdate_range("2026-01-01", periods=60)
+    panel = pd.DataFrame({"SPX": np.arange(60.0)}, index=real)
+    panel.loc[pd.Timestamp("2029-01-01"), "FEDTARMD"] = 3.6
+    panel = panel.sort_index()
+
+    rest, proj = split_projections(panel)
+    assert list(proj.columns) == ["FEDTARMD"]
+    assert "FEDTARMD" not in rest.columns
+
+    end = rest.dropna(how="all").index.max()
+    out = to_business_days(rest, end=end)
+    assert out.index[-1] == real[-1], "時間軸不該被未來日期拉長"
+    # 前瞻序列若留在面板裡，SPX 會被向前填補成平線
+    assert out["SPX"].iloc[-1] == 59.0
+
+
+def test_three_month_change_survives_projection_series():
+    """端到端：面板含未來日期欄位時，三個月變化不可塌成 0。"""
+    from bcm.sources import merge_panel
+    from bcm.macro_dash import metric_snapshot
+
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=200)
+    raw = pd.DataFrame({"SPX": np.linspace(100.0, 200.0, len(idx))}, index=idx)
+    raw.loc[pd.Timestamp.today().normalize() + pd.DateOffset(years=3),
+            "FEDTARMD"] = 3.6
+    panel = merge_panel(None, raw.sort_index())
+
+    assert panel.index[-1] <= pd.Timestamp.today().normalize()
+    assert "FEDTARMD" not in panel.columns
+    snap = metric_snapshot(panel, "SPX", "pct")
+    assert snap["ok"] and abs(snap["change"]) > 1.0, "三個月變化不該是 0"
+
+
+def test_cache_roundtrip_quarantines_projections(tmp_path):
+    """舊快取裡已經寫進未來日期 —— 讀取時必須自己清乾淨。"""
+    from bcm.sources import (load_cache, projection_path, projections_of,
+                             save_cache)
+
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=30)
+    dirty = pd.DataFrame({"SPX": np.arange(30.0)}, index=idx)
+    future = pd.Timestamp.today().normalize() + pd.DateOffset(years=3)
+    dirty.loc[future, "FEDTARMD"] = 3.6
+    dirty.loc[future, "SPX"] = 29.0            # 被向前填補的殘骸
+    path = tmp_path / "panel.csv"
+    dirty.sort_index().to_csv(path)            # 刻意用原始寫法存下汙染版
+
+    got = load_cache(str(path))
+    assert got.index[-1] <= pd.Timestamp.today().normalize()
+    assert "FEDTARMD" not in got.columns
+    assert len(got) == 30
+    proj = projections_of(got)
+    assert list(proj.columns) == ["FEDTARMD"] and proj.iloc[-1, 0] == 3.6
+
+    # 再存一次：前瞻序列要落到獨立檔案，主檔案不得含未來日期
+    save_cache(got, str(path), projections=proj)
+    reread = pd.read_csv(path, index_col=0, parse_dates=True)
+    assert "FEDTARMD" not in reread.columns
+    assert reread.index[-1] <= pd.Timestamp.today().normalize()
+    assert pd.read_csv(projection_path(str(path)), index_col=0,
+                       parse_dates=True).iloc[-1, 0] == 3.6
+
+
+def test_dotplot_table_renders_years_as_columns():
+    from bcm.macro_dash import dotplot_table
+
+    year = pd.Timestamp.today().year
+    proj = pd.DataFrame(
+        {"FEDTARMD": [3.6, 3.4, 3.1]},
+        index=pd.to_datetime([f"{year}-01-01", f"{year+1}-01-01",
+                              f"{year+2}-01-01"]))
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=40)
+    panel = pd.DataFrame({"FEDTARMDLR": 3.0}, index=idx)
+    panel.iloc[-10:, 0] = 3.2                    # 最後一次會議調升長期中位數
+
+    html = dotplot_table(proj, panel)
+    assert f"{year} 年底" in html and f"{year+2} 年底" in html
+    assert "3.60" in html and "3.10" in html
+    assert "3.20" in html and "長期（r*）" in html
+    # 日期取「最後一次數值改變」，不是被向前填補到的最後一個營業日
+    assert str(idx[-10].date()) in html
+    assert str(idx[-1].date()) not in html
+    assert "前瞻預測" in html
+    assert dotplot_table(None) == ""
+    assert dotplot_table(pd.DataFrame()) == ""

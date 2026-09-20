@@ -22,7 +22,8 @@ import pandas as pd
 from bcm import dashboard, derived, macro_dash
 from bcm import indicators as cfg
 from bcm import scoring, stages
-from bcm.sources import build_panel, load_cache, merge_panel, save_cache
+from bcm.sources import (build_panel, last_obs_of, load_cache, merge_panel,
+                         projections_of, save_cache)
 
 
 def _width(text: str) -> int:
@@ -175,8 +176,11 @@ def main() -> int:
                     print(f"⚠ {label} 序列抓取失敗（{ee}），主資料不受影響",
                           file=sys.stderr)
             if args.cache:
-                save_cache(panel, args.cache)
-                print(f"  快取已更新：{args.cache}（{len(panel)} 筆）")
+                save_cache(panel, args.cache,
+                           projections=projections_of(panel),
+                           last_obs=last_obs_of(panel))
+                print(f"  快取已更新：{args.cache}（{len(panel)} 筆，"
+                      f"至 {panel.index[-1].date()}）")
         except Exception as e:
             if cached is None:
                 print(f"資料抓取失敗：{e}", file=sys.stderr)
@@ -188,6 +192,12 @@ def main() -> int:
                   f"{cached.index[-1].date()}（{stale} 天前）", file=sys.stderr)
             panel = cached
 
+    # 前瞻性序列（FOMC 點陣圖）獨立取出：它的觀測日在未來，留在面板裡會把
+    # 時間軸拉到未來，其他序列被向前填補成平線，所有「近三個月變化」變成 0。
+    projections = projections_of(panel)
+    # 每欄真實的最後觀測日（向前填補前記下的），資料健康檢查需要它
+    last_obs = last_obs_of(panel)
+
     # 衍生序列（淨流動性、銅金比、Sahm 缺口）：單位換算集中在 bcm/derived.py
     panel, skipped = derived.add_derived(panel)
     if skipped:
@@ -195,7 +205,10 @@ def main() -> int:
             print(f"  ⚠ 衍生指標 {k} 無法計算：缺少 {'、'.join(v)}", file=sys.stderr)
 
     if args.macro:
-        html_macro = macro_dash.render(panel, cfg, skipped=skipped, demo=args.demo)
+        html_macro = macro_dash.render(panel, cfg, skipped=skipped,
+                                       demo=args.demo,
+                                       projections=projections,
+                                       last_obs=last_obs)
         with open(args.macro, "w", encoding="utf-8") as f:
             f.write(html_macro)
         print(f"  總經儀表板已輸出：{args.macro}")

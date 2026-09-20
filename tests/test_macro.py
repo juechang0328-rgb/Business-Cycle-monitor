@@ -351,3 +351,62 @@ def test_projection_series_flagged_when_outdated():
                            asof=pd.Timestamp("2026-09-18"))
     assert h.iloc[0]["status"] == "延遲"
     assert "SEP" in h.iloc[0]["detail"]
+
+
+# ------------------------------------------- 向前填補讓健康檢查看不見停更序列
+# 面板裡每一欄都被填補到最後一個營業日，所以從面板本身看，任何序列都像是
+# 「今天剛更新」。真實觀測日必須在填補前記下並隨快取一起保存，否則這個
+# 用來抓「指標默默失效」的檢查，自己就先失效了。
+
+def test_forward_fill_hides_stalled_series_without_last_obs():
+    from bcm import health
+
+    idx = pd.bdate_range("2026-01-01", "2026-09-18")
+    # 真實觀測停在 3 月，但面板已被填補到 9 月
+    panel = pd.DataFrame({"UNRATE": 4.2}, index=idx)
+    spec = [("失業率", "UNRATE", "monthly")]
+
+    naive = health.check_panel(panel, spec, asof=idx[-1])
+    assert naive.iloc[0]["status"] == "正常", "沒有觀測日紀錄時只能看到假的正常"
+    assert not naive.iloc[0]["verified"]
+
+    真 = pd.Series({"UNRATE": pd.Timestamp("2026-03-01")})
+    checked = health.check_panel(panel, spec, asof=idx[-1], last_obs=真)
+    assert checked.iloc[0]["status"] == "停更"
+    assert checked.iloc[0]["last"] == pd.Timestamp("2026-03-01")
+    assert checked.iloc[0]["verified"]
+    assert health.summarise(checked)["unverified"] == 0
+    assert health.summarise(naive)["unverified"] == 1
+
+
+def test_last_obs_recorded_before_forward_fill():
+    from bcm.sources import last_observations, to_business_days
+
+    idx = pd.bdate_range("2026-01-01", periods=40)
+    raw = pd.DataFrame({"DAILY": 1.0, "MONTHLY": np.nan}, index=idx)
+    raw.loc[idx[5], "MONTHLY"] = 3.0
+    lo = last_observations(raw)
+    assert lo["MONTHLY"] == idx[5] and lo["DAILY"] == idx[-1]
+    # 填補後從面板本身再也看不出 MONTHLY 停在第 6 天
+    filled = to_business_days(raw)
+    assert filled["MONTHLY"].last_valid_index() == idx[-1]
+
+
+def test_cache_roundtrip_keeps_last_obs(tmp_path):
+    from bcm.sources import load_cache, merge_panel, save_cache, last_obs_of
+
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=20)
+    panel = pd.DataFrame({"A": 1.0, "B": 2.0}, index=idx)
+    lo = pd.Series({"A": idx[-1], "B": idx[3]})
+    path = tmp_path / "panel.csv"
+    save_cache(panel, str(path), last_obs=lo)
+
+    got = load_cache(str(path))
+    assert last_obs_of(got)["B"] == idx[3]
+
+    # 合併時逐欄取較晚的觀測日，且不會弄丟舊欄位的紀錄
+    newer = pd.DataFrame({"B": 2.0}, index=idx)
+    newer.attrs["last_obs"] = pd.Series({"B": idx[-1]})
+    merged = merge_panel(got, newer)
+    m = last_obs_of(merged)
+    assert m["B"] == idx[-1] and m["A"] == idx[-1]

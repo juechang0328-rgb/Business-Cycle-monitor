@@ -5,4 +5,8 @@ __pycache__/
 site/
 dashboard.html
 *.csv
-!data/panel.csv
+# 資料快取要進版控：panel.csv 及其側車檔（前瞻序列、真實觀測日）
+!data/*.csv
+# 本機預覽用的輸出；正式網站由 workflow 產生到 site/
+/index.html
+/macro.html

@@ -295,11 +295,26 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
         skip = (f'<div class="warnbox"><b>衍生指標無法計算：</b>'
                 f'<ul class="tight">{items}</ul></div>')
 
-    has_problem = bool(len(bad) or skipped)
+    # 沒有真實觀測日紀錄時，「最後更新」只是面板日期，不能當成已驗證
+    nver = summary.get("unverified", 0)
+    unverified_note = (
+        f'<div class="warnbox"><b>{nver} 項的更新日期尚未驗證</b><br>'
+        f'<span class="sub2">快取裡還沒有這些欄位的真實觀測日紀錄，'
+        f'表中的「最後更新」暫時沿用面板日期，因此不足以判斷是否停更。'
+        f'下一次線上抓取後會自動補上。</span></div>') if nver else ""
+
+    # 未驗證也算「不能宣稱正常」：否則標題會寫「全部正常」，
+    # 而底下同時寫著「更新日期尚未驗證」，自相矛盾
+    has_problem = bool(len(bad) or skipped or nver)
     banner_cls = "ok" if not has_problem else (
         "alert" if (summary["missing"] or summary["stalled"]) else "warn")
-    banner_txt = ("全部 %d 項資料正常" % summary["total"] if not has_problem
-                  else f'{len(bad)} 項異常　·　{summary["ok"]}/{summary["total"]} 項正常')
+    if not has_problem:
+        banner_txt = "全部 %d 項資料正常" % summary["total"]
+    elif len(bad) or skipped:
+        banner_txt = (f'{len(bad)} 項異常　·　'
+                      f'{summary["ok"]}/{summary["total"]} 項正常')
+    else:
+        banner_txt = f'{nver} 項更新日期待驗證'
     # 有問題才預設展開；一切正常時不該佔版面
     open_attr = " open" if has_problem else ""
 
@@ -317,7 +332,10 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
     <details class="sub-fold"><summary>已知無法取得的指標 {len(unavailable)} 項</summary>
       <ul class="una">{una}</ul></details>
     <p class="sub2">判定標準：日頻容許落後 6 天、週頻 12 天、月頻 55 天。
-    超過容許值三倍視為停更。容差已計入公布延遲與連假。</p>
+    超過容許值三倍視為停更。容差已計入公布延遲與連假。
+    「最後更新」取自向前填補<b>之前</b>的真實觀測日 —— 面板裡每一欄都被填到
+    最後一個營業日，只看面板會讓每個序列都像是今天剛更新。</p>
+    {unverified_note}
   </div>
 </details>"""
 
@@ -552,14 +570,19 @@ footer b{color:var(--ink)}
 
 
 def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None,
-           demo: bool = False) -> str:
+           demo: bool = False, projections: pd.DataFrame | None = None,
+           last_obs: pd.Series | None = None) -> str:
     a = cfg.active()
     groups = a.get("groups", [])
     hspec = a.get("health", [])
     unavailable = a.get("unavailable", [])
     asof = panel.index[-1]
 
-    h = health.check_panel(panel, hspec, asof=asof)
+    # 前瞻性序列不在面板裡（會汙染時間軸），但仍要納入健康檢查：
+    # 只為檢查而暫時併進來，asof 已先從面板取定，不受未來日期影響。
+    hpanel = panel if projections is None or not len(projections) \
+        else panel.join(projections, how="outer")
+    h = health.check_panel(hpanel, hspec, asof=asof, last_obs=last_obs)
     summary = health.summarise(h)
 
     demo_banner = ('<div class="warnbox" style="border-left-color:var(--alert)">'
@@ -584,7 +607,9 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
 {demo_banner}
 {briefing.render(panel, cfg)}
 {health_panel(h, summary, unavailable, skipped or {})}
-{groups_html(panel, groups, extra={"公債殖利率": yield_curve_svg(panel)},
+{groups_html(panel, groups,
+             extra={"公債殖利率": yield_curve_svg(panel)
+                    + dotplot_table(projections, panel)},
              fixed_order=a.get("fixed_order"))}
 
 <footer>
@@ -840,3 +865,58 @@ def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
             f'2Y–30Y 為附息債券），不是由鄰近天期內插而來。'
             f'CMT 的擬合僅用於輸入點之間未輸出的天期（如 4Y、8Y）。</p>'
             f'{table}</div>')
+
+
+# --------------------------------------------------------- FOMC 點陣圖（前瞻）
+# 點陣圖不是時間序列，而是「這次會議對未來各年度的預測」。FEDTARMD 的觀測日標在
+# 被預測的年度（例如 2029-01-01），混進日頻面板會把時間軸拉到未來，其他序列全被
+# 向前填補成平線 —— 曾經因此讓儀表板上每一項的「近三個月變化」都變成 0.00%。
+# 因此獨立存放、獨立呈現：一張表，欄位是被預測的年度，而不是一張走勢圖。
+# （FEDTARMDLR 長期中位數的觀測日是會議日，屬於正常的日頻序列，取最新值即可。）
+
+
+def dotplot_table(proj: pd.DataFrame | None,
+                  panel: pd.DataFrame | None = None) -> str:
+    """把 FOMC 點陣圖畫成表格：欄＝被預測的年度，外加長期中位數。"""
+    by_year: dict[int, float] = {}
+    if proj is not None and len(proj) and "FEDTARMD" in proj.columns:
+        s = proj["FEDTARMD"].dropna()
+        this_year = (panel.index[-1].year if panel is not None and len(panel)
+                     else pd.Timestamp.today().year)
+        for d, v in s.items():
+            # 同一年若有多筆（快取曾被向前填補），取最後一筆＝該年度的預測值
+            if d.year >= this_year:
+                by_year[d.year] = float(v)
+
+    lr = None
+    if panel is not None and "FEDTARMDLR" in panel.columns:
+        t = panel["FEDTARMDLR"].dropna()
+        if len(t):
+            # 面板裡這一欄被向前填補到最後一個營業日，取 index[-1] 會誤稱
+            # 「今天更新」。SEP 每季才改一次，因此取最後一次「數值改變」的日期，
+            # 那才是發布這份預測的 FOMC 會議日。
+            changed = t[t.ne(t.shift())]
+            lr = (float(t.iloc[-1]), changed.index[-1])
+    if not by_year and lr is None:
+        return ""
+
+    years = sorted(by_year)
+    heads = "".join(f'<th class="num">{y} 年底</th>' for y in years)
+    cells = "".join(f'<td class="num">{by_year[y]:.2f}</td>' for y in years)
+    if lr is not None:
+        heads += '<th class="num">長期（r*）</th>'
+        cells += f'<td class="num">{lr[0]:.2f}</td>'
+    asof = (f"　·　最後一次更新 {lr[1].date()}（FOMC 會議）"
+            if lr is not None else "")
+    return (f'<div class="card"><div class="mlabel">FOMC 點陣圖中位數（%）'
+            f'<span class="sub2" style="font-weight:400"> · 前瞻預測，非市場價格'
+            f'{_esc(asof)}</span></div>'
+            f'<table class="htable"><thead><tr>{heads}</tr></thead>'
+            f'<tbody><tr>{cells}</tr></tbody></table>'
+            f'<p class="sub2" style="margin:8px 0 0">'
+            f'來源 FRED · FEDTARMD／FEDTARMDLR（Summary of Economic Projections，'
+            f'每年 3／6／9／12 月更新）。這是<b>FOMC 對未來的預測</b>，不是已發生的'
+            f'事實，因此不放進日頻時間軸、也不計算「近三個月變化」——'
+            f'把它併入日頻面板會讓其他指標被向前填補成平線。'
+            f'與上方「市場定價（期貨）」相比即可看出市場信不信 Fed 的路徑。</p>'
+            f'</div>')
