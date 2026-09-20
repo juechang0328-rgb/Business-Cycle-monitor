@@ -443,3 +443,20 @@ def test_card_shows_true_observation_date_not_panel_date():
     # 沒有紀錄時退回面板日期（維持原行為，不至於空白）
     assert "2026-09-18" in macro_dash.metric_card(
         panel, "核心PCE", "PCEPILFE", "level", None)
+
+
+def test_balance_sheet_cards_show_readable_units():
+    """央行資產負債表以百萬美元發布，直接印出是 6,746,548 —— 沒人讀得出量級。"""
+    idx = pd.bdate_range("2026-01-01", periods=120)
+    panel = pd.DataFrame({"WALCL": np.linspace(6.8e6, 6.75e6, 120),
+                          "WTREGEN": np.linspace(8.0e5, 8.77e5, 120)},
+                         index=idx)
+    walcl = macro_dash.metric_card(panel, "Fed 總資產", "WALCL", "level", None)
+    assert "兆美元" in walcl and "6,746,5" not in walcl
+    tga = macro_dash.metric_card(panel, "財政部TGA", "WTREGEN", "level", None)
+    assert "十億美元" in tga
+    # 變化量也要跟著換算，否則箭頭方向會和顯示值對不上
+    raw = panel["WTREGEN"]
+    expect = (raw.iloc[-1] - raw.iloc[-64]) * 1e-3
+    assert f"{expect:+,.2f}" in tga
+    assert "▲" in tga                     # 上升，且與顯示值同號

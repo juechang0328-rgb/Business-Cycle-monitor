@@ -201,6 +201,9 @@ MACRO_FRED = [
     "FEDTARMD", "FEDTARMDLR",
     # 央行流動性（單位不一致，見 bcm/derived.py）
     "WALCL", "WTREGEN", "RRPONTSYD", "DTWEXBGS",
+    # 準備金稀缺程度：淨流動性想代理的其實是這件事，而這兩個是直接測量。
+    "WRESBAL",          # 銀行體系準備金餘額（週三，百萬美元）
+    "SOFR", "IORB",     # 擔保隔夜融資利率、準備金利率（皆為百分點）
     # 金融壓力
     "T10Y2Y", "T10Y3M", "BAMLH0A0HYM2", "NFCI",
     # NFCI 的三個子指數：拆開才知道緊或鬆是哪一塊造成的
@@ -209,6 +212,9 @@ MACRO_FRED = [
 
 MACRO_YAHOO = [
     "HG=F", "GC=F", "CL=F", "^VIX", "^GSPC", "^IXIC",
+    # 台股。^TWII 為發行量加權股價指數（上市），^TWOII 為櫃買指數（上櫃）。
+    # 兩者的交易時段與美股不重疊，因此最新值通常比美股指數早一個日曆日。
+    "^TWII", "^TWOII",
     "ZQ=F",   # 30 天期 Fed Funds 期貨（隱含利率 = 100 − 價格）
     # 能源
     "BZ=F",   # 布蘭特原油（CL=F 是西德州 WTI，兩者價差反映運輸與品質差異）
@@ -258,6 +264,9 @@ MACRO_HEALTH = [
     ("10年期殖利率",    "DGS10",        "daily"),
     ("2年期殖利率",     "DGS2",         "daily"),
     ("通膨預期10Y",     "T10YIE",       "daily"),
+    ("銀行準備金",      "WRESBAL",      "weekly"),
+    ("SOFR",            "SOFR",         "daily"),
+    ("準備金利率IORB",  "IORB",         "daily"),
     ("Fed 總資產",      "WALCL",        "weekly"),
     ("財政部TGA",       "WTREGEN",      "weekly"),
     ("隔夜逆回購",      "RRPONTSYD",    "daily"),
@@ -272,6 +281,8 @@ MACRO_HEALTH = [
     ("VIX",             "^VIX",         "daily"),
     ("標普500",         "^GSPC",        "daily"),
     ("納斯達克",        "^IXIC",        "daily"),
+    ("台灣加權指數",    "^TWII",        "daily"),
+    ("櫃買OTC指數",     "^TWOII",       "daily"),
     ("政策利率上限",    "DFEDTARU",     "daily"),
     ("政策利率下限",    "DFEDTARL",     "daily"),
     ("有效聯邦資金利率", "DFF",          "daily"),
@@ -314,9 +325,11 @@ FIXED_ORDER_GROUPS = {"公債殖利率"}
 # mode：pct=百分比變化、diff=絕對差、level=水準值
 MACRO_GROUPS = [
     ("市場情緒", [
-        ("標普500",   "^GSPC", "pct",   None),
-        ("納斯達克",  "^IXIC", "pct",   None),
-        ("VIX",       "^VIX",  "level", {"calm": 15, "stress": 25}),
+        ("標普500",     "^GSPC",  "pct",   None),
+        ("納斯達克",    "^IXIC",  "pct",   None),
+        ("台灣加權指數", "^TWII",  "pct",   None),
+        ("櫃買OTC指數",  "^TWOII", "pct",   None),
+        ("VIX",         "^VIX",   "level", {"calm": 15, "stress": 25}),
     ]),
     ("景氣動能", [
         ("工業生產年增", "INDPRO",       "yoy",   None),
@@ -350,6 +363,8 @@ MACRO_GROUPS = [
     ]),
     ("央行流動性", [
         ("Fed 淨流動性", "NET_LIQ",      "level", None),
+        ("銀行準備金",   "WRESBAL",      "level", None),
+        ("SOFR−IORB",   "SOFR_IORB",    "level", {"scarce": 0.0}),
         ("Fed 總資產",   "WALCL",        "level", None),
         ("財政部TGA",    "WTREGEN",      "level", None),
         ("隔夜逆回購",   "RRPONTSYD",    "level", None),

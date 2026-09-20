@@ -441,3 +441,25 @@ def test_dotplot_table_renders_years_as_columns():
     assert "前瞻預測" in html
     assert dotplot_table(None) == ""
     assert dotplot_table(pd.DataFrame()) == ""
+
+
+def test_panel_attrs_survive_concat():
+    """attrs 裡放 DataFrame 會讓面板任兩欄的 pd.concat 直接拋錯。
+
+    pandas 在 concat 時以 `==` 比較兩邊的 attrs，值是 DataFrame 的話那個比較
+    會拋 ValueError，而且訊息完全看不出問題出在 attrs。因此 attrs 只放 dict。
+    """
+    from bcm.sources import (last_obs_of, merge_panel, projections_of)
+
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=30)
+    raw = pd.DataFrame({"A": 1.0, "B": 2.0}, index=idx)
+    raw.loc[pd.Timestamp.today().normalize() + pd.DateOffset(years=3),
+            "FEDTARMD"] = 3.6
+    raw.attrs["last_obs"] = pd.Series({"A": idx[-1], "B": idx[3]})
+    panel = merge_panel(None, raw.sort_index())
+
+    assert all(isinstance(v, dict) for v in panel.attrs.values())
+    pd.concat([panel["A"], panel["B"]], axis=1)      # 不得拋錯
+    # 轉換後內容仍正確
+    assert projections_of(panel).iloc[-1, 0] == 3.6
+    assert last_obs_of(panel)["B"] == idx[3]

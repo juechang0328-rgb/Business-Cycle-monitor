@@ -116,10 +116,8 @@ def build_panel(yahoo_tickers: Iterable[str], fred_codes: Iterable[str],
     # 時間軸上界取「非前瞻序列的最後一筆」，避免被未來日期拉長
     end = panel.dropna(how="all").index.max() if len(panel) else None
     out = to_business_days(panel, end=end)
-    if len(proj):
-        out.attrs["projections"] = proj
-    if len(last_obs):
-        out.attrs["last_obs"] = last_obs
+    _attach(out, "projections", proj)
+    _attach(out, "last_obs", last_obs)
     return out
 
 
@@ -137,7 +135,12 @@ def last_obs_of(df: pd.DataFrame | None) -> pd.Series:
     if df is None:
         return pd.Series(dtype="datetime64[ns]")
     v = getattr(df, "attrs", {}).get("last_obs")
-    return v if isinstance(v, pd.Series) else pd.Series(dtype="datetime64[ns]")
+    if isinstance(v, pd.Series):
+        return v
+    if not isinstance(v, dict) or not v:
+        return pd.Series(dtype="datetime64[ns]")
+    return pd.Series({k: pd.Timestamp(d) for k, d in v.items()},
+                     dtype="datetime64[ns]").sort_index()
 
 
 def _combine_last_obs(older: pd.Series, newer: pd.Series) -> pd.Series:
@@ -222,12 +225,35 @@ def drop_future(panel: pd.DataFrame,
     return panel.loc[panel.index <= t]
 
 
+# attrs 只放「純量容器」（dict），不放 DataFrame／Series。
+# pandas 在 concat 時會用 `==` 比較兩邊的 attrs，值是 DataFrame 的話那個比較會
+# 直接拋 ValueError：面板任兩欄做 pd.concat 就會爆掉，而且錯誤訊息完全看不出
+# 原因出在 attrs。因此進出 attrs 時一律轉換。
+def _attach(df: pd.DataFrame, key: str, value) -> None:
+    if value is None or not len(value):
+        df.attrs.pop(key, None)
+        return
+    if key == "projections":
+        df.attrs[key] = {c: {d.strftime("%Y-%m-%d"): float(v)
+                             for d, v in value[c].dropna().items()}
+                         for c in value.columns}
+    else:
+        df.attrs[key] = {k: pd.Timestamp(v).strftime("%Y-%m-%d")
+                         for k, v in value.items() if not pd.isna(v)}
+
+
 def projections_of(df: pd.DataFrame | None) -> pd.DataFrame:
     """取出掛在面板 attrs 上的前瞻性序列（沒有就回空表）。"""
     if df is None:
         return pd.DataFrame()
     p = getattr(df, "attrs", {}).get("projections")
-    return p if isinstance(p, pd.DataFrame) else pd.DataFrame()
+    if isinstance(p, pd.DataFrame):
+        return p
+    if not isinstance(p, dict) or not p:
+        return pd.DataFrame()
+    cols = {c: pd.Series({pd.Timestamp(d): v for d, v in obs.items()})
+            for c, obs in p.items() if obs}
+    return pd.DataFrame(cols).sort_index() if cols else pd.DataFrame()
 
 
 def compress_projections(proj: pd.DataFrame) -> pd.DataFrame:
@@ -294,11 +320,9 @@ def load_cache(path: str) -> pd.DataFrame | None:
     stored = load_projections(projection_path(path))
     proj = _combine_proj(inline, stored if stored is not None
                          else pd.DataFrame())
-    if len(proj):
-        df.attrs["projections"] = proj
+    _attach(df, "projections", proj)
     lo = load_last_obs(meta_path(path))
-    if len(lo):
-        df.attrs["last_obs"] = lo[lo.index.isin(df.columns)]
+    _attach(df, "last_obs", lo[lo.index.isin(df.columns)] if len(lo) else lo)
     return df
 
 
@@ -346,9 +370,7 @@ def merge_panel(old: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
     proj = pd.DataFrame()
     for c in chunks:
         proj = _combine_proj(proj, c)
-    if len(proj):
-        out.attrs["projections"] = proj
+    _attach(out, "projections", proj)
     lo = _combine_last_obs(lo_old, lo_new)
-    if len(lo):
-        out.attrs["last_obs"] = lo[lo.index.isin(out.columns)]
+    _attach(out, "last_obs", lo[lo.index.isin(out.columns)] if len(lo) else lo)
     return out

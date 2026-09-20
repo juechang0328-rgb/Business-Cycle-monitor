@@ -142,8 +142,10 @@ def threshold_note(code: str, cur: float, th: dict | None) -> tuple[str, str]:
     if not th:
         return "", ""
     if "warn" in th and code == "SAHMREALTIME":
+        # 單向指標：只有「上升越過 0.50」有意義，往下掉不是好消息也不是事件。
+        # 因此顯示「離觸發還有多遠」，而不是光寫一個門檻數字。
         return (("已觸發衰退訊號", "alert") if cur >= th["warn"]
-                else (f"門檻 {th['warn']:.2f}", "calm"))
+                else (f"距觸發 {th['warn'] - cur:.2f}pp", "calm"))
     if "target" in th:
         gap = cur - th["target"]
         lvl = "calm" if abs(gap) < 0.5 else ("warn" if gap > 0 else "normal")
@@ -164,6 +166,14 @@ def threshold_note(code: str, cur: float, th: dict | None) -> tuple[str, str]:
         if cur < th["stress"]:
             return ("常態", "normal")
         return ("高波動", "alert")
+    if "scarce" in th:          # SOFR − IORB：轉正代表附買回市場在搶錢
+        if cur <= th["scarce"] - 3:
+            return ("準備金充裕", "calm")
+        if cur <= th["scarce"] + 5:
+            return ("接近中性", "normal")
+        if cur <= th["scarce"] + 15:
+            return ("準備金偏緊", "warn")
+        return ("附買回市場吃緊", "alert")
     if "tight" in th:
         return (("條件偏緊", "warn") if cur > th["tight"] else ("條件寬鬆", "calm"))
     return "", ""
@@ -195,6 +205,17 @@ CHANGE_LABEL = {"level": "近3個月", "yoy": "較3個月前",
 CHANGE_UNIT = {"level": "", "yoy": "pp", "m3ann": "pp", "pct": "pp"}
 
 
+# 原始 FRED 序列的顯示單位換算。央行資產負債表各項以「百萬美元」發布，
+# 直接印出來是 6,746,548 這種數字 —— 正確但沒人讀得出量級。
+# （衍生序列的換算寫在 bcm/derived.py，兩邊不重複。）
+SCALE_BY_CODE = {
+    "WALCL":     (1e-6, "兆美元"),      # 百萬 → 兆
+    "WRESBAL":   (1e-6, "兆美元"),
+    "WTREGEN":   (1e-3, "十億美元"),    # 百萬 → 十億（TGA 量級較小）
+    "RRPONTSYD": (1.0,  "十億美元"),    # 本來就是十億
+}
+
+
 def metric_card(panel: pd.DataFrame, name: str, code: str,
                 mode: str, th: dict | None, zscore: float | None = None,
                 last_obs: pd.Timestamp | None = None) -> str:
@@ -209,9 +230,14 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
     # 衍生序列可能有自己的顯示單位與縮放
     spec = derived.DERIVED.get(code)
     cunit = CHANGE_UNIT.get(mode, "")
+    raw_scale = SCALE_BY_CODE.get(code) if mode == "level" else None
     if spec and mode == "level":
         cur_disp = _fmt(cur * spec["scale"], spec["display_unit"])
         chg_disp = f'{chg*spec["scale"]:+,.2f}'
+    elif raw_scale:
+        f, u = raw_scale
+        cur_disp = _fmt(cur * f, u)
+        chg_disp = f"{chg*f:+,.2f}"
     else:
         cur_disp = _fmt(cur, unit)
         chg_disp = f"{chg:+,.2f}{cunit}"
@@ -231,7 +257,9 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
     # 方向本身不帶好壞：VIX 與信用利差上升是壞事，用綠漲紅跌會傳達相反意思。
     # 因此變化值用中性色，只以箭頭表示方向，語意由門檻徽章承擔。
     # 依四捨五入後的顯示值判斷方向，避免出現「▲ +0.00」這種自相矛盾的組合
-    shown_chg = round(chg * (spec["scale"] if spec and mode == "level" else 1), 2)
+    _sc = spec["scale"] if spec and mode == "level" else (
+        raw_scale[0] if raw_scale else 1)
+    shown_chg = round(chg * _sc, 2)
     arrow = "▲" if shown_chg > 0 else ("▼" if shown_chg < 0 else "—")
     badge = f'<span class="m-badge {lvl}">{_esc(note)}</span>' if note else ""
     return (
@@ -347,6 +375,19 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
 </details>"""
 
 
+# 少數區塊光看數字判讀不出來，在標題下補一行說明它能回答什麼問題。
+GROUP_NOTES = {
+    "央行流動性":
+        "這一區<b>不是訊號區</b>。本專案實測 2003 年以來 Fed 淨流動性與標普500 的關係，"
+        "方向會隨時代翻轉（2008–09 同期 −0.67、2010–19 +0.19、2022–26 領先 +0.36），"
+        "無法用來預測。它的用途是看「管道還通不通」：真正有門檻可判讀的是 "
+        "<b>SOFR−IORB</b> 與<b>銀行準備金</b> —— 前者持續轉正代表準備金已經稀缺，"
+        "Fed 就得停止縮表。其餘幾項是拆解用的零件。",
+    "市場情緒":
+        "台股與美股交易時段不重疊，台股的最新值通常比美股早一個日曆日。",
+}
+
+
 def groups_html(panel: pd.DataFrame, groups: list[tuple],
                 extra: dict[str, str] | None = None,
                 fixed_order: set[str] | None = None,
@@ -369,10 +410,12 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
         n_ok = sum(1 for it in items if metric_snapshot(panel, it[1], it[2])["ok"])
         anom = (f'<span class="grp-anom">⚠ {n_anom} 項變化異常</span>'
                 if n_anom else "")
+        note = GROUP_NOTES.get(title, "")
+        note_html = f'<p class="grp-note">{note}</p>' if note else ""
         out.append(
             f'<section class="grp"><h2>{_esc(title)}'
             f'<span class="grp-n">{n_ok}/{len(items)}</span>{anom}</h2>'
-            f'{extra.get(title, "")}'
+            f'{note_html}{extra.get(title, "")}'
             f'<div class="mgrid">{"".join(cards)}</div></section>')
     return "".join(out)
 
@@ -435,18 +478,29 @@ HOVER_JS = """
 
 # ------------------------------------------------------------------- 頁面
 CSS = """
+/* 配色原則
+   1. 狀態色（ok／warn／alert）在兩種模式維持同一組色相家族，只換明度階。
+      先前深色模式直接換成另一組更亮的色（#4ade80／#fbbf24），對比高達 9–10:1，
+      比數值本身還搶眼，且綠色由青綠跳成薄荷綠 —— 看起來像另一套設計。
+   2. 深色底改用中性灰。原本的 #0f1216 帶藍調，和藍色走勢線同色系，
+      整頁糊成一片冷藍。
+   3. 兩種模式的狀態色都落在 4.4–7.0:1，足以閱讀又不會蓋過主要數字。
+   4. 折線色 s1/s2/s3 為已驗證的分類色序（色盲可辨），不隨模式換色相。 */
 :root{
   --bg:#fff;--panel:#f7f8fa;--card:#fff;--line:#e3e6ea;--ink:#16191d;--muted:#6b7280;
-  --accent:#2a78d6;--ok:#1a7f5a;--warn:#c07600;--alert:#c0392b;--dead:#8b8f98;
+  --accent:#2a78d6;--ok:#0f7a2e;--warn:#a86a00;--alert:#bf3030;--dead:#8b8f98;
+  --band:#6b7280;--band-op:.14;
   --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
 }
 :root:not([data-theme="light"]){@media(prefers-color-scheme:dark){
-  --bg:#0f1216;--panel:#171b21;--card:#1a1e25;--line:#2b313b;--ink:#e8eaed;--muted:#9aa4b2;
-  --accent:#3987e5;--ok:#4ade80;--warn:#fbbf24;--alert:#f87171;--dead:#6b7280;
+  --bg:#101010;--panel:#191918;--card:#1c1c1b;--line:#34342f;--ink:#ececea;--muted:#a3a29a;
+  --accent:#3987e5;--ok:#35b45e;--warn:#d99a17;--alert:#e06a6a;--dead:#7d7c75;
+  --band:#ffffff;--band-op:.09;
   --s1:#3987e5;--s2:#d95926;--s3:#199e70;}}
 :root[data-theme="dark"]{
-  --bg:#0f1216;--panel:#171b21;--card:#1a1e25;--line:#2b313b;--ink:#e8eaed;--muted:#9aa4b2;
-  --accent:#3987e5;--ok:#4ade80;--warn:#fbbf24;--alert:#f87171;--dead:#6b7280;
+  --bg:#101010;--panel:#191918;--card:#1c1c1b;--line:#34342f;--ink:#ececea;--muted:#a3a29a;
+  --accent:#3987e5;--ok:#35b45e;--warn:#d99a17;--alert:#e06a6a;--dead:#7d7c75;
+  --band:#ffffff;--band-op:.09;
   --s1:#3987e5;--s2:#d95926;--s3:#199e70;}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -506,10 +560,12 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
  display:flex;align-items:baseline;gap:8px}
 .grp-n{font-size:11.5px;opacity:.75}
 .grp-anom{font-size:11.5px;color:var(--warn);margin-left:4px}
+.grp-note{font-size:12.5px;color:var(--muted);margin:-4px 0 12px;max-width:88ch;
+ line-height:1.7;border-left:2px solid var(--line);padding-left:10px}
 .zchip{margin-left:6px;font-size:10.5px;color:var(--warn);
  border:1px solid currentColor;border-radius:99px;padding:0 5px;white-space:nowrap}
 .curve-lab{font-size:11.5px;font-weight:700}
-.policy-band{fill:var(--muted);opacity:.16}
+.policy-band{fill:var(--band);opacity:var(--band-op)}
 .policy-lab{font-size:10.5px;fill:var(--muted)}
 .shape{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
 .shape-tag{font-size:15px;font-weight:700;padding:3px 11px;border-radius:99px;
@@ -613,6 +669,10 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
   用途是<b>描述現在市場在發生什麼</b>，不是預測。每張卡片顯示最新值、近三個月變化、
   近 12 個月走勢，以及（若適用）關鍵門檻位置。走勢線一律使用中性色 ——
   上升不等於是好事，例如 VIX 與信用利差走高代表風險升高。
+  <br>區塊內的<b>排序依據是「這次的三個月變化相對於該指標自己的歷史變化有多極端」</b>
+  （變化量的 z 分數），不是重要程度，也<b>不分方向</b> —— 排在前面只代表「動得不尋常」，
+  可能是好事也可能是壞事，甚至可能沒有意義（例如 Sahm Rule 往下掉）。
+  公債殖利率區塊例外，固定依天期排列。
 </p>
 {demo_banner}
 {briefing.render(panel, cfg, health_df=h)}

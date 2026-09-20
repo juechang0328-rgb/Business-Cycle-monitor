@@ -49,6 +49,17 @@ DERIVED = {
         "display_unit": "",
         "note": "100 − ZQ=F 價格。這是近月合約，反映未來約一個月的政策利率定價",
     },
+    "SOFR_IORB": {
+        "name": "SOFR − IORB 利差",
+        "requires": ["SOFR", "IORB"],
+        # 兩者同為百分點，可直接相減。這是「準備金夠不夠」最直接的溫度計：
+        # 附買回市場的隔夜利率高於 Fed 付給銀行的準備金利率，代表市場上搶錢。
+        "fn": lambda p: (p["SOFR"] - p["IORB"]) * 100,
+        "unit": "基點",
+        "scale": 1.0,
+        "display_unit": "bp",
+        "note": "(SOFR − IORB)×100；長期為負或零，轉正且持續＝準備金開始稀缺",
+    },
     "SAHM_GAP": {
         "name": "Sahm Rule 缺口",
         "requires": ["UNRATE"],
