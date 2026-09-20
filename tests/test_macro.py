@@ -161,3 +161,87 @@ def test_arrow_matches_displayed_value():
     card = macro_dash.metric_card(pd.DataFrame({"X": s}), "測試", "X", "level", None)
     assert "+0.00" in card
     assert "▲" not in card and "▼" not in card
+
+
+# ------------------------------------------------- 變化幅度排序與異常標示
+def _wiggly_panel(n=600):
+    idx = pd.bdate_range(end="2026-09-18", periods=n)
+    rng = np.random.default_rng(3)
+    calm = pd.Series(np.cumsum(rng.normal(0, 0.01, n)) + 10, index=idx)
+    shock = calm.copy()
+    shock.iloc[-60:] += np.linspace(0, 5, 60)      # 近期大幅偏離
+    return pd.DataFrame({"CALM": calm, "SHOCK": shock}, index=idx)
+
+
+def test_change_zscore_flags_unusual_move():
+    panel = _wiggly_panel()
+    z_calm = macro_dash.change_zscore(panel["CALM"].dropna())
+    z_shock = macro_dash.change_zscore(panel["SHOCK"].dropna())
+    assert abs(z_shock) > abs(z_calm)
+    assert abs(z_shock) >= macro_dash.ANOMALY_Z
+
+
+def test_rank_items_puts_largest_move_first():
+    panel = _wiggly_panel()
+    items = [("平穩", "CALM", "level", None), ("劇變", "SHOCK", "level", None)]
+    assert macro_dash.rank_items(panel, items)[0][1] == "SHOCK"
+
+
+def test_missing_series_sinks_to_bottom():
+    panel = _wiggly_panel()
+    items = [("缺料", "NOPE", "level", None), ("平穩", "CALM", "level", None)]
+    assert macro_dash.rank_items(panel, items)[-1][1] == "NOPE"
+
+
+def test_anomaly_chip_rendered_when_z_exceeds_threshold():
+    """迴歸測試：z 分數算出來了卻沒插進卡片標記，曾導致區塊說有異常但卡片沒標。"""
+    panel = _wiggly_panel()
+    card = macro_dash.metric_card(panel, "劇變", "SHOCK", "level", None, zscore=3.4)
+    assert "zchip" in card and "3.4σ" in card
+    quiet = macro_dash.metric_card(panel, "平穩", "CALM", "level", None, zscore=0.3)
+    assert "zchip" not in quiet
+
+
+def test_group_anomaly_count_matches_rendered_chips():
+    """區塊標題宣稱的異常數，必須等於卡片上實際畫出的標記數。"""
+    import re
+    panel = _wiggly_panel()
+    html = macro_dash.groups_html(panel, [
+        ("測試", [("平穩", "CALM", "level", None),
+                  ("劇變", "SHOCK", "level", None)])])
+    chips = len(re.findall(r'class="zchip"', html))
+    claimed = sum(int(m) for m in re.findall(r'⚠ (\d+) 項變化異常', html))
+    assert chips == claimed == 1
+
+
+# ------------------------------------------------------------ 殖利率曲線
+def test_yield_curve_overlays_current_and_past():
+    idx = pd.bdate_range(end="2026-09-18", periods=400)
+    rng = np.random.default_rng(5)
+    base = pd.Series(np.cumsum(rng.normal(0, 0.01, 400)) + 4.0, index=idx)
+    panel = pd.DataFrame({c: base + off for c, off in
+                          [("DGS3MO", 0.4), ("DGS2", 0.0), ("DGS10", 0.3),
+                           ("DGS30", 0.5)]}, index=idx)
+    out = macro_dash.yield_curve_svg(panel)
+    assert "<svg" in out
+    assert "現在" in out and "3個月前" in out
+    assert "各天期數值" in out, "應附可展開的數值表，不能只有圖"
+
+
+def test_yield_curve_degrades_without_data():
+    idx = pd.bdate_range(end="2026-09-18", periods=50)
+    out = macro_dash.yield_curve_svg(pd.DataFrame({"X": range(50)}, index=idx))
+    assert "<svg" not in out and "尚無" in out
+
+
+def test_fixed_order_groups_are_not_resorted():
+    """殖利率天期有內在順序，不可依變化幅度重排。"""
+    import re
+    panel = _wiggly_panel()
+    group = [("測試", [("平穩", "CALM", "level", None),
+                       ("劇變", "SHOCK", "level", None)])]
+    sorted_html = macro_dash.groups_html(panel, group)
+    fixed_html = macro_dash.groups_html(panel, group, fixed_order={"測試"})
+    order = lambda h: re.findall(r'class="m-name">([^<]+)<', h)
+    assert order(sorted_html)[0] == "劇變", "預設應依變化幅度排序"
+    assert order(fixed_html) == ["平穩", "劇變"], "指定固定順序時應維持宣告順序"

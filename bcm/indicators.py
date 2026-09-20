@@ -107,7 +107,8 @@ def active() -> dict:
                 "growth": ECON_GROWTH, "inflation": ECON_INFLATION,
                 "dashboard": ECON_DASHBOARD, "reality": ECON_REALITY,
                 "groups": MACRO_GROUPS, "health": MACRO_HEALTH,
-                "unavailable": MACRO_UNAVAILABLE}
+                "unavailable": MACRO_UNAVAILABLE,
+                "fixed_order": FIXED_ORDER_GROUPS}
     if PROFILE == "econ":
         return {"yahoo": [], "fred": ECON_FRED, "growth": ECON_GROWTH,
                 "inflation": ECON_INFLATION, "dashboard": ECON_DASHBOARD,
@@ -190,15 +191,20 @@ MACRO_FRED = [
     # 景氣動能
     "PAYEMS", "UNRATE", "SAHMREALTIME", "INDPRO", "IC4WSA", "PERMIT",
     # 通膨與利率
-    "PCEPILFE", "CPILFESL", "DFII10", "DGS10", "DGS2", "T10YIE",
+    "PCEPILFE", "CPILFESL", "DFII10", "T10YIE",
+    # 公債殖利率全期限（原始數據，利差由此推導而來）
+    "DGS1MO", "DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3",
+    "DGS5", "DGS7", "DGS10", "DGS20", "DGS30",
     # 央行流動性（單位不一致，見 bcm/derived.py）
     "WALCL", "WTREGEN", "RRPONTSYD", "DTWEXBGS",
     # 金融壓力
     "T10Y2Y", "T10Y3M", "BAMLH0A0HYM2", "NFCI",
+    # NFCI 的三個子指數：拆開才知道緊或鬆是哪一塊造成的
+    "NFCIRISK", "NFCICREDIT", "NFCILEVERAGE",
 ]
 
 MACRO_YAHOO = [
-    "HG=F", "GC=F", "CL=F", "^VIX", "^GSPC",
+    "HG=F", "GC=F", "CL=F", "^VIX", "^GSPC", "^IXIC",
     # 能源
     "BZ=F",   # 布蘭特原油（CL=F 是西德州 WTI，兩者價差反映運輸與品質差異）
     "NG=F",   # 天然氣
@@ -260,6 +266,19 @@ MACRO_HEALTH = [
     ("原油",            "CL=F",         "daily"),
     ("VIX",             "^VIX",         "daily"),
     ("標普500",         "^GSPC",        "daily"),
+    ("納斯達克",        "^IXIC",        "daily"),
+    ("1個月期殖利率",   "DGS1MO",       "daily"),
+    ("3個月期殖利率",   "DGS3MO",       "daily"),
+    ("6個月期殖利率",   "DGS6MO",       "daily"),
+    ("1年期殖利率",     "DGS1",         "daily"),
+    ("3年期殖利率",     "DGS3",         "daily"),
+    ("5年期殖利率",     "DGS5",         "daily"),
+    ("7年期殖利率",     "DGS7",         "daily"),
+    ("20年期殖利率",    "DGS20",        "daily"),
+    ("30年期殖利率",    "DGS30",        "daily"),
+    ("NFCI風險",        "NFCIRISK",     "weekly"),
+    ("NFCI信用",        "NFCICREDIT",   "weekly"),
+    ("NFCI槓桿",        "NFCILEVERAGE", "weekly"),
     ("布蘭特原油",      "BZ=F",         "daily"),
     ("天然氣",          "NG=F",         "daily"),
     ("RBOB汽油",        "RB=F",         "daily"),
@@ -276,9 +295,18 @@ MACRO_HEALTH = [
     ("農產品DBA",       "DBA",          "daily"),
 ]
 
+# 這些區塊維持宣告順序，不依變化幅度重排 ——
+# 天期順序本身就是資訊，打亂後曲線形狀就讀不出來了。
+FIXED_ORDER_GROUPS = {"公債殖利率"}
+
 # 儀表板分組：(區塊標題, [(顯示名稱, 代碼, 呈現方式, 門檻或說明)])
 # mode：pct=百分比變化、diff=絕對差、level=水準值
 MACRO_GROUPS = [
+    ("市場情緒", [
+        ("標普500",   "^GSPC", "pct",   None),
+        ("納斯達克",  "^IXIC", "pct",   None),
+        ("VIX",       "^VIX",  "level", {"calm": 15, "stress": 25}),
+    ]),
     ("景氣動能", [
         ("工業生產年增", "INDPRO",       "yoy",   None),
         ("非農就業3月年化", "PAYEMS",    "m3ann", None),
@@ -292,8 +320,19 @@ MACRO_GROUPS = [
         ("核心CPI年增",  "CPILFESL",     "yoy",   {"target": 2.0}),
         ("10年實質利率", "DFII10",       "level", None),
         ("通膨預期10Y",  "T10YIE",       "level", None),
-        ("10年期殖利率", "DGS10",        "level", None),
-        ("2年期殖利率",  "DGS2",         "level", None),
+    ]),
+    ("公債殖利率", [
+        ("1個月",  "DGS1MO", "level", None),
+        ("3個月",  "DGS3MO", "level", None),
+        ("6個月",  "DGS6MO", "level", None),
+        ("1年",    "DGS1",   "level", None),
+        ("2年",    "DGS2",   "level", None),
+        ("3年",    "DGS3",   "level", None),
+        ("5年",    "DGS5",   "level", None),
+        ("7年",    "DGS7",   "level", None),
+        ("10年",   "DGS10",  "level", None),
+        ("20年",   "DGS20",  "level", None),
+        ("30年",   "DGS30",  "level", None),
     ]),
     ("央行流動性", [
         ("Fed 淨流動性", "NET_LIQ",      "level", None),
@@ -310,6 +349,9 @@ MACRO_GROUPS = [
         ("高收益債利差", "BAMLH0A0HYM2", "level",
          {"calm": 3.00, "normal": 4.50, "stress": 5.00, "unit": "pp"}),
         ("金融條件NFCI", "NFCI",         "level", {"tight": 0.0}),
+        ("NFCI·風險",    "NFCIRISK",     "level", {"tight": 0.0}),
+        ("NFCI·信用",    "NFCICREDIT",   "level", {"tight": 0.0}),
+        ("NFCI·槓桿",    "NFCILEVERAGE", "level", {"tight": 0.0}),
     ]),
     ("原物料 · 能源", [
         ("WTI 原油",     "CL=F",     "pct", None),
@@ -337,10 +379,5 @@ MACRO_GROUPS = [
         ("商品指數 DBC",   "DBC", "pct", None),
         ("農產品 DBA",     "DBA", "pct", None),
         ("銅金比",         "COPPER_GOLD", "level", None),
-    ]),
-    ("市場情緒", [
-        ("VIX",          "^VIX",         "level", {"calm": 15, "stress": 25}),
-        ("標普500",      "^GSPC",        "pct",   None),
-        ("原油",         "CL=F",         "pct",   None),
     ]),
 ]

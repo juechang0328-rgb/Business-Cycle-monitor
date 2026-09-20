@@ -275,6 +275,58 @@ META: dict[str, dict[str, str]] = {
         how="本儀表板顯示的是三個月報酬率，不是指數點位。"),
 }
 
+# ------------------------------------------------------------ 公債殖利率
+_TENOR_HOW = {
+    "DGS1MO": "最貼近隔夜政策利率，幾乎等於 Fed 當前的目標區間。",
+    "DGS3MO": "貨幣市場基準。與 10 年期的利差是預測衰退能力最強的組合。",
+    "DGS6MO": "反映未來半年的政策預期，降息循環啟動前會先鬆動。",
+    "DGS1":   "一年內的政策路徑定價，對 Fed 措辭變化敏感。",
+    "DGS2":   "市場對未來兩年政策利率的定價，Fed 轉向最先反映在這裡。",
+    "DGS3":   "介於政策預期與期限溢酬之間的過渡天期。",
+    "DGS5":   "中段曲線的代表，常用於判斷市場對「中期均衡利率」的看法。",
+    "DGS7":   "中長段過渡，流動性略低於 5 年與 10 年。",
+    "DGS10":  "全球長期資金成本的基準，房貸與企業債定價多以此為錨。",
+    "DGS20":  "長端天期，受期限溢酬與退休金／保險需求影響大。",
+    "DGS30":  "最長天期，主要反映長期通膨預期與財政可持續性的疑慮。",
+}
+for _code, _how in _TENOR_HOW.items():
+    _yrs = {"DGS1MO": "1 個月", "DGS3MO": "3 個月", "DGS6MO": "6 個月"}.get(
+        _code, _code.replace("DGS", "") + " 年")
+    META.setdefault(_code, dict(
+        full=f"{_yrs}期美國公債殖利率",
+        src=f"FRED · {_code}（財政部固定到期日殖利率 CMT，日頻，單位：%）",
+        formula="直接取市場報價。CMT 為財政部由次級市場報價擬合出的標準天期殖利率。",
+        what=f"借錢給美國政府 {_yrs} 的年化報酬率，視為該天期的無風險利率。",
+        how=_how))
+
+META["^IXIC"] = dict(
+    full="納斯達克綜合指數 NASDAQ Composite",
+    src="Yahoo Finance · ^IXIC",
+    formula="近三個月變化率",
+    what="納斯達克交易所全部上市股票的市值加權指數，科技股權重高。",
+    how="與標普500 的相對強弱反映市場的風險偏好與成長股／價值股輪動。"
+        "對實質利率變化比標普500 更敏感。")
+
+META["NFCIRISK"] = dict(
+    full="NFCI 風險子指數",
+    src="FRED · NFCIRISK（芝加哥 Fed，週頻）",
+    formula="NFCI 三大子指數之一，標準化後長期平均＝0",
+    what="衡量金融部門的波動度與資金取得風險。",
+    how=">0 代表風險程度高於歷史平均。這一塊通常最快反應市場壓力。")
+META["NFCICREDIT"] = dict(
+    full="NFCI 信用子指數",
+    src="FRED · NFCICREDIT（芝加哥 Fed，週頻）",
+    formula="NFCI 三大子指數之一",
+    what="衡量信用取得的難易程度，含各類利差與放款條件。",
+    how=">0 代表信用條件緊於平均。與高收益債利差方向通常一致。")
+META["NFCILEVERAGE"] = dict(
+    full="NFCI 槓桿子指數",
+    src="FRED · NFCILEVERAGE（芝加哥 Fed，週頻）",
+    formula="NFCI 三大子指數之一",
+    what="衡量債務與股權的槓桿水準。",
+    how="注意方向：<b>槓桿下降會使 NFCI 上升</b>（視為條件收緊），"
+        "因為去槓桿代表資金收縮。這一塊常是三者中最遲鈍的。")
+
 
 def get(code: str) -> dict | None:
     return META.get(code)

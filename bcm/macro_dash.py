@@ -168,7 +168,7 @@ CHANGE_UNIT = {"level": "", "yoy": "pp", "m3ann": "pp", "pct": "pp"}
 
 
 def metric_card(panel: pd.DataFrame, name: str, code: str,
-                mode: str, th: dict | None) -> str:
+                mode: str, th: dict | None, zscore: float | None = None) -> str:
     snap = metric_snapshot(panel, code, mode)
     if not snap["ok"]:
         return (f'<div class="mcard missing"><div class="m-name">{_esc(name)}</div>'
@@ -187,6 +187,11 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         cur_disp = _fmt(cur, unit)
         chg_disp = f"{chg:+,.2f}{cunit}"
 
+    # 變化的極端程度：以該指標自己的歷史變化分布為基準
+    zchip = ""
+    if zscore is not None and not np.isnan(zscore) and abs(zscore) >= ANOMALY_Z:
+        zchip = (f'<span class="zchip">⚠ {abs(zscore):.1f}σ</span>')
+
     note, lvl = threshold_note(code, cur, th)
     # 方向本身不帶好壞：VIX 與信用利差上升是壞事，用綠漲紅跌會傳達相反意思。
     # 因此變化值用中性色，只以箭頭表示方向，語意由門檻徽章承擔。
@@ -199,7 +204,7 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         f'  <div class="m-head"><span class="m-name">{_esc(name)}</span>{badge}</div>'
         f'  <div class="m-val">{cur_disp}</div>'
         f'  <div class="m-chg"><span class="m-arrow">{arrow}</span>{chg_disp}'
-        f'<span class="m-chg-lab">{CHANGE_LABEL.get(mode, "近3個月")}</span></div>'
+        f'<span class="m-chg-lab">{CHANGE_LABEL.get(mode, "近3個月")}</span>{zchip}</div>'
         f'  {sparkline(snap["series"], thresholds=th)}'
         f'  <div class="m-sub">{snap["last_date"].date()}　{_esc(code)}</div>'
         f'</div>')
@@ -288,15 +293,30 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
 </details>"""
 
 
-def groups_html(panel: pd.DataFrame, groups: list[tuple]) -> str:
+def groups_html(panel: pd.DataFrame, groups: list[tuple],
+                extra: dict[str, str] | None = None,
+                fixed_order: set[str] | None = None) -> str:
+    extra = extra or {}
+    fixed_order = fixed_order or set()
     out = []
     for title, items in groups:
-        cards = "".join(metric_card(panel, *it) for it in items)
+        # 有內在順序的區塊（例如殖利率天期）維持宣告順序
+        ordered = items if title in fixed_order else rank_items(panel, items)
+        cards, n_anom = [], 0
+        for it in ordered:
+            snap = metric_snapshot(panel, it[1], it[2])
+            z = change_zscore(snap["series"]) if snap["ok"] else float("nan")
+            if not np.isnan(z) and abs(z) >= ANOMALY_Z:
+                n_anom += 1
+            cards.append(metric_card(panel, *it, zscore=z))
         n_ok = sum(1 for it in items if metric_snapshot(panel, it[1], it[2])["ok"])
+        anom = (f'<span class="grp-anom">⚠ {n_anom} 項變化異常</span>'
+                if n_anom else "")
         out.append(
             f'<section class="grp"><h2>{_esc(title)}'
-            f'<span class="grp-n">{n_ok}/{len(items)}</span></h2>'
-            f'<div class="mgrid">{cards}</div></section>')
+            f'<span class="grp-n">{n_ok}/{len(items)}</span>{anom}</h2>'
+            f'{extra.get(title, "")}'
+            f'<div class="mgrid">{"".join(cards)}</div></section>')
     return "".join(out)
 
 
@@ -305,13 +325,16 @@ CSS = """
 :root{
   --bg:#fff;--panel:#f7f8fa;--card:#fff;--line:#e3e6ea;--ink:#16191d;--muted:#6b7280;
   --accent:#2a78d6;--ok:#1a7f5a;--warn:#c07600;--alert:#c0392b;--dead:#8b8f98;
+  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
 }
 :root:not([data-theme="light"]){@media(prefers-color-scheme:dark){
   --bg:#0f1216;--panel:#171b21;--card:#1a1e25;--line:#2b313b;--ink:#e8eaed;--muted:#9aa4b2;
-  --accent:#3987e5;--ok:#4ade80;--warn:#fbbf24;--alert:#f87171;--dead:#6b7280;}}
+  --accent:#3987e5;--ok:#4ade80;--warn:#fbbf24;--alert:#f87171;--dead:#6b7280;
+  --s1:#3987e5;--s2:#d95926;--s3:#199e70;}}
 :root[data-theme="dark"]{
   --bg:#0f1216;--panel:#171b21;--card:#1a1e25;--line:#2b313b;--ink:#e8eaed;--muted:#9aa4b2;
-  --accent:#3987e5;--ok:#4ade80;--warn:#fbbf24;--alert:#f87171;--dead:#6b7280;}
+  --accent:#3987e5;--ok:#4ade80;--warn:#fbbf24;--alert:#f87171;--dead:#6b7280;
+  --s1:#3987e5;--s2:#d95926;--s3:#199e70;}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
  font:15px/1.6 -apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif}
@@ -358,6 +381,13 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
 .grp h2{font-size:14px;color:var(--muted);margin:0 0 11px;font-weight:600;
  display:flex;align-items:baseline;gap:8px}
 .grp-n{font-size:11.5px;opacity:.75}
+.grp-anom{font-size:11.5px;color:var(--warn);margin-left:4px}
+.zchip{margin-left:6px;font-size:10.5px;color:var(--warn);
+ border:1px solid currentColor;border-radius:99px;padding:0 5px;white-space:nowrap}
+.curve-lab{font-size:11.5px;font-weight:700}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted)}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
 .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(216px,1fr));gap:12px}
 .mcard{background:var(--card);border:1px solid var(--line);border-radius:11px;
  padding:12px 13px 9px;display:flex;flex-direction:column;gap:3px}
@@ -430,7 +460,8 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
 </p>
 {demo_banner}
 {health_panel(h, summary, unavailable, skipped or {})}
-{groups_html(panel, groups)}
+{groups_html(panel, groups, extra={"公債殖利率": yield_curve_svg(panel)},
+             fixed_order=a.get("fixed_order"))}
 
 <footer>
   <b>資料來源</b>　FRED 公開 CSV（免 API key）、Yahoo Finance。<br>
@@ -444,3 +475,149 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
   本頁僅供理解現況，不構成投資建議。
 </footer>
 </div></body></html>"""
+
+
+# ------------------------------------------------------- 變化幅度標準化排序
+# 不同指標的變化量無法直接比較：VIX 漲 5 點與 CPI 漲 0.3pp 是不同量綱。
+# 因此改用「這次的三個月變化，相對於該指標自己歷史上的三個月變化」有多極端，
+# 也就是變化量的 z-score。如此才能跨指標排序。
+ANOMALY_Z = 2.0          # |z| 超過此值標示為異常
+
+
+def change_zscore(s: pd.Series, offset=None) -> float:
+    """本次變化在該序列歷史變化分布中的 z 分數。"""
+    offset = offset or pd.DateOffset(months=3)
+    if s.empty or len(s) < 60:
+        return float("nan")
+    base = _shift_by(s, offset)
+    diffs = (s - base).dropna()
+    if len(diffs) < 30:
+        return float("nan")
+    sd = diffs.std()
+    if not sd or np.isnan(sd):
+        return float("nan")
+    return float((diffs.iloc[-1] - diffs.mean()) / sd)
+
+
+def rank_items(panel: pd.DataFrame, items: list[tuple]) -> list[tuple]:
+    """區塊內依變化的極端程度排序，最不尋常的排最前面。
+
+    取不到值的指標一律沉到最後，避免缺料卡佔據視線焦點。
+    """
+    scored = []
+    for it in items:
+        snap = metric_snapshot(panel, it[1], it[2])
+        z = change_zscore(snap["series"]) if snap["ok"] else float("nan")
+        scored.append((it, z))
+    return [it for it, _ in sorted(
+        scored,
+        key=lambda t: (-abs(t[1]) if not np.isnan(t[1]) else 1e9, ))]
+
+
+# ----------------------------------------------------------- 殖利率曲線圖
+CURVE_TENORS = [
+    ("1M", "DGS1MO"), ("3M", "DGS3MO"), ("6M", "DGS6MO"), ("1Y", "DGS1"),
+    ("2Y", "DGS2"), ("3Y", "DGS3"), ("5Y", "DGS5"), ("7Y", "DGS7"),
+    ("10Y", "DGS10"), ("20Y", "DGS20"), ("30Y", "DGS30"),
+]
+
+
+def _curve_at(panel: pd.DataFrame, when: pd.Timestamp) -> list[tuple[str, float]]:
+    out = []
+    for label, code in CURVE_TENORS:
+        if code not in panel.columns:
+            continue
+        s = panel[code].dropna()
+        if s.empty:
+            continue
+        v = s.asof(when)
+        if pd.notna(v):
+            out.append((label, float(v)))
+    return out
+
+
+def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
+    """殖利率曲線：現在 vs 三個月前 vs 一年前，疊在同一張圖上比較形狀變化。
+
+    橫軸為天期，採等距排列（非按年數比例）—— 否則短天期會被擠在左緣，
+    而曲線形狀的變化正好最常發生在短端。
+    """
+    if not any(c in panel.columns for _, c in CURVE_TENORS):
+        return '<p class="sub2">尚無公債殖利率資料</p>'
+    asof = panel.index[-1]
+    snaps = [
+        ("現在", asof, 1),
+        ("3個月前", asof - pd.DateOffset(months=3), 2),
+        ("1年前", asof - pd.DateOffset(years=1), 3),
+    ]
+    curves = [(lab, _curve_at(panel, when), slot) for lab, when, slot in snaps]
+    curves = [c for c in curves if len(c[1]) >= 3]
+    if not curves:
+        return '<p class="sub2">尚無公債殖利率資料</p>'
+
+    labels = [l for l, _ in CURVE_TENORS
+              if any(l in dict(c[1]) for c in curves)]
+    m = dict(l=48, r=92, t=16, b=38)
+    pw, ph = w - m["l"] - m["r"], h - m["t"] - m["b"]
+    vals = [v for _, c, _ in curves for _, v in c]
+    lo, hi = min(vals), max(vals)
+    pad = (hi - lo) * 0.18 or 0.5
+    lo, hi = lo - pad, hi + pad
+    px = lambda i: m["l"] + (i / max(len(labels) - 1, 1)) * pw
+    py = lambda v: m["t"] + (hi - v) / (hi - lo) * ph
+
+    p = [f'<svg viewBox="0 0 {w} {h}" class="chart" role="img" '
+         f'aria-label="美國公債殖利率曲線，現在與過去比較">']
+    for k in range(6):
+        v = lo + (hi - lo) * k / 5
+        p.append(f'<line x1="{m["l"]}" y1="{py(v):.1f}" x2="{m["l"]+pw}" '
+                 f'y2="{py(v):.1f}" class="grid"/>')
+        p.append(f'<text x="{m["l"]-8}" y="{py(v)+4:.1f}" class="tick" '
+                 f'text-anchor="end">{v:.2f}</text>')
+    for i, lab in enumerate(labels):
+        p.append(f'<text x="{px(i):.1f}" y="{m["t"]+ph+20}" class="tick" '
+                 f'text-anchor="middle">{lab}</text>')
+
+    for name, curve, slot in curves:
+        d = dict(curve)
+        pts, last = [], None
+        for i, lab in enumerate(labels):
+            if lab in d:
+                pts.append(f"{px(i):.1f},{py(d[lab]):.1f}")
+                last = (px(i), py(d[lab]), d[lab])
+        dash = '' if slot == 1 else (' stroke-dasharray="6 3"' if slot == 2
+                                     else ' stroke-dasharray="2 3"')
+        p.append(f'<polyline points="{" ".join(pts)}" fill="none" '
+                 f'stroke="var(--s{slot})" stroke-width="2.4" '
+                 f'stroke-linejoin="round"{dash}/>')
+        for i, lab in enumerate(labels):
+            if lab in d:
+                p.append(f'<circle cx="{px(i):.1f}" cy="{py(d[lab]):.1f}" r="3" '
+                         f'fill="var(--s{slot})"><title>{name} {lab} '
+                         f'{d[lab]:.2f}%</title></circle>')
+        if last:
+            p.append(f'<text x="{last[0]+10:.1f}" y="{last[1]+4:.1f}" '
+                     f'class="curve-lab" fill="var(--s{slot})">{name}</text>')
+    p.append("</svg>")
+
+    legend = "".join(
+        f'<span><i style="background:var(--s{slot})"></i>{name}</span>'
+        for name, _, slot in curves)
+    now = dict(curves[0][1])
+    prev = dict(curves[1][1]) if len(curves) > 1 else {}
+    rows = "".join(
+        f'<tr><td>{l}</td><td class="num">{now.get(l, float("nan")):.2f}</td>'
+        f'<td class="num">{prev.get(l, float("nan")):.2f}</td>'
+        f'<td class="num">{now.get(l, float("nan")) - prev.get(l, float("nan")):+.2f}</td></tr>'
+        for l in labels if l in now)
+    table = (f'<details class="sub-fold"><summary>各天期數值</summary>'
+             f'<table class="htable"><thead><tr><th>天期</th>'
+             f'<th class="num">現在</th><th class="num">3個月前</th>'
+             f'<th class="num">變化</th></tr></thead><tbody>{rows}</tbody>'
+             f'</table></details>')
+    return (f'<div class="card">{"".join(p)}'
+            f'<div class="legend">{legend}</div>'
+            f'<p class="sub2" style="margin:8px 0 0">'
+            f'橫軸為天期，採等距排列。曲線整體上移＝殖利率全面走升；'
+            f'短端上升快於長端＝平坦化；短端下降快於長端＝陡峭化。</p>'
+            f'{table}</div>')
