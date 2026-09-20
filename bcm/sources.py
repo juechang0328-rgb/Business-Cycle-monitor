@@ -27,12 +27,55 @@ PROJECTION_CODES = {"FEDTARMD"}
 
 
 # --------------------------------------------------------------------- yfinance
+# Yahoo 的指數代號不穩定，同一個指數在不同時期／不同區域站台可能是不同代號，
+# 而抓不到時 yfinance 只會安靜地回傳空欄位。因此對有疑慮的序列列出候選代號，
+# 一次全抓，取第一個真的有資料的，並把它更名為正式代號。
+TICKER_ALIASES = {
+    # 櫃買（OTC / TPEx）指數
+    "^TWOII": ["^TWOII", "^TWO", "^OTCI", "TWOTCI", "^TWOTCI"],
+}
+
+
+def resolve_aliases(tickers: Iterable[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """把帶有候選代號的清單展開成 (實際要抓的代號, {正式代號: 候選清單})。"""
+    out, alias = [], {}
+    for t in tickers:
+        cands = TICKER_ALIASES.get(t)
+        if cands:
+            alias[t] = list(cands)
+            out.extend(c for c in cands if c not in out)
+        elif t not in out:
+            out.append(t)
+    return out, alias
+
+
+def pick_alias(close: pd.DataFrame, alias: dict[str, list[str]]) -> pd.DataFrame:
+    """每組候選代號取第一個有資料者，更名為正式代號，其餘候選欄位丟掉。"""
+    for canon, cands in alias.items():
+        winner = next((c for c in cands
+                       if c in close.columns and close[c].notna().any()), None)
+        # 必須先丟掉落選欄位再更名：否則把 ^TWO 更名為 ^TWOII 會和原本那個
+        # 空的 ^TWOII 欄撞名，接著的 drop 會把兩欄一起刪掉，資料又沒了。
+        drop = [c for c in cands if c in close.columns and c != winner]
+        if drop:
+            close = close.drop(columns=drop)
+        if winner is None:
+            print(f"  ⚠ Yahoo：{canon} 的候選代號全部抓不到資料"
+                  f"（試過 {'、'.join(cands)}）")
+            if canon not in close.columns:
+                close[canon] = float("nan")
+        elif winner != canon:
+            print(f"  Yahoo：{canon} 改用代號 {winner}")
+            close = close.rename(columns={winner: canon})
+    return close
+
+
 def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
                 retries: int = 3) -> pd.DataFrame:
     """抓取 Yahoo 收盤價，回傳 DataFrame(index=日期, columns=ticker)。"""
     import yfinance as yf
 
-    tickers = list(tickers)
+    tickers, alias = resolve_aliases(tickers)
     last_err: Exception | None = None
     for attempt in range(retries):
         try:
@@ -44,7 +87,7 @@ def fetch_yahoo(tickers: Iterable[str], start: str = "2005-01-01",
             if isinstance(close, pd.Series):
                 close = close.to_frame(tickers[0])
             close.columns = [str(c) for c in close.columns]
-            return close.sort_index()
+            return pick_alias(close.sort_index(), alias)
         except Exception as e:  # 網路波動時退避重試
             last_err = e
             if attempt < retries - 1:

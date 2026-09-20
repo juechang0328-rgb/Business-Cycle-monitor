@@ -463,3 +463,25 @@ def test_panel_attrs_survive_concat():
     # 轉換後內容仍正確
     assert projections_of(panel).iloc[-1, 0] == 3.6
     assert last_obs_of(panel)["B"] == idx[3]
+
+
+def test_ticker_alias_picks_first_with_data():
+    """Yahoo 指數代號不穩定，抓不到時 yfinance 只會安靜回傳空欄位。"""
+    from bcm.sources import pick_alias, resolve_aliases
+
+    want, alias = resolve_aliases(["^GSPC", "^TWOII"])
+    assert want[0] == "^GSPC" and "^TWOII" in want and len(want) > 2
+    assert alias["^TWOII"][0] == "^TWOII"
+
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    close = pd.DataFrame({"^GSPC": 1.0, "^TWOII": np.nan, "^TWO": 220.0,
+                          "^OTCI": np.nan, "TWOTCI": np.nan, "^TWOTCI": np.nan},
+                         index=idx)
+    out = pick_alias(close, alias)
+    assert list(out.columns) == ["^GSPC", "^TWOII"]      # 候選欄位已收斂
+    assert (out["^TWOII"] == 220.0).all()                # 取到有資料的那個
+
+    # 全部抓不到時不得拋錯，欄位留著（後續健康檢查會標記無資料）
+    empty = pd.DataFrame({c: np.nan for c in alias["^TWOII"]}, index=idx)
+    out2 = pick_alias(empty, alias)
+    assert "^TWOII" in out2.columns and out2["^TWOII"].isna().all()
