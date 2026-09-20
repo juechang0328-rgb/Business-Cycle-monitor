@@ -465,27 +465,45 @@ def health_panel(h: pd.DataFrame, summary: dict, unavailable: list[dict],
 
 
 # 少數區塊光看數字判讀不出來，在標題下補一行說明它能回答什麼問題。
+def nfci_summary(panel: pd.DataFrame) -> str:
+    """NFCI 四項的綜合判讀。
+
+    四個數字分開看不出結論：總指數是三個分項加權而成，方向一致時是全面性的，
+    分歧時代表壓力只出現在其中一塊。這段依固定規則產生，不是預測。
+    """
+    need = {"NFCI": "總體", "NFCIRISK": "風險", "NFCICREDIT": "信用",
+            "NFCILEVERAGE": "槓桿"}
+    vals, chgs = {}, {}
+    for code in need:
+        snap = metric_snapshot(panel, code, "level")
+        if not snap["ok"]:
+            return ""
+        vals[code] = snap["current"]
+        chgs[code] = snap["change"]
+
+    total = vals["NFCI"]
+    state = "寬鬆" if total < 0 else "緊縮"
+    # 0 是長期平均；|值| 越大離平均越遠
+    degree = "明顯" if abs(total) > 0.4 else ("略為" if abs(total) > 0.1 else "接近平均，")
+    head = (f'整體<b>{degree}{state}</b>' if degree != "接近平均，"
+            else f'整體<b>接近長期平均</b>')
+
+    tight = [need[c] for c in ("NFCIRISK", "NFCICREDIT", "NFCILEVERAGE")
+             if vals[c] > 0]
+    trend = "寬鬆" if chgs["NFCI"] < 0 else "緊縮"
+    move = "持續" if (total < 0) == (chgs["NFCI"] < 0) else "轉向"
+
+    if tight:
+        detail = f'，但<b>{"、".join(tight)}</b>那一塊偏緊'
+    else:
+        detail = "，三個分項都偏鬆"
+    return f'{head}{detail}；近三個月{move}往{trend}走。'
+
+
 GROUP_NOTES = {
-    "央行流動性":
-        "這一區<b>不是訊號區</b>。本專案實測 2003 年以來 Fed 淨流動性與標普500 的關係，"
-        "方向會隨時代翻轉（2008–09 同期 −0.67、2010–19 +0.19、2022–26 領先 +0.36），"
-        "無法用來預測。它的用途是看「管道還通不通」：真正有門檻可判讀的是 "
-        "<b>SOFR−IORB</b> 與<b>銀行準備金</b> —— 前者持續轉正代表準備金已經稀缺，"
-        "Fed 就得停止縮表。其餘幾項是拆解用的零件。",
-    "市場情緒":
-        "台股與美股交易時段不重疊，台股的最新值通常比美股早一個日曆日。"
-        "這一區<b>固定順序</b>，不依變化幅度重排 —— 每天位置一樣才好比對。",
     "資金流向":
-        "全部是<b>比值</b>（A÷B），回答的是「錢往哪邊跑」，不是「會漲還是會跌」。"
-        "相除之後兩邊共同的因素（大盤漲跌、利率水準）大致抵銷，"
-        "剩下的才是資金偏好的變化。"
-        "<br><b>怎麼看這幾張卡</b>：比值那個數字本身不用管，看另外兩樣 ——"
-        "① <b>徽章</b>：現值落在自己近 5 年區間的第幾百分位（偏低／中性／偏高）；"
-        "② <b>灰線那句話</b>：近三個月的方向代表錢往哪邊流。"
-        "兩者要一起看：「偏低且還在往下」是持續的趨勢，"
-        "「偏低但轉為往上」才是變化。"
-        "<br>這些是<b>同期描述</b>，不是領先指標。本專案已經實測過景氣階段模型"
-        "對未來報酬沒有預測力，這一區同樣不該拿來擇時。",
+        "每張卡是兩個指數相除。<b>往上＝錢流向前者，往下＝流向後者。</b>"
+        "徽章是它在近 5 年裡的高低位置。",
 }
 
 
@@ -516,6 +534,8 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
         anom = (f'<span class="grp-anom">⚠ {n_anom} 項變化異常</span>'
                 if n_anom else "")
         note = GROUP_NOTES.get(title, "")
+        if title.startswith("金融條件"):
+            note = nfci_summary(panel) or note
         note_html = f'<p class="grp-note">{note}</p>' if note else ""
         out.append(
             f'<section class="grp"><h2>{_esc(title)}'
@@ -776,18 +796,8 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
 <header>
   <h1>總經儀表板</h1>
   <span class="asof">資料日期 {asof.date()}　·　產生於 {datetime.now():%Y-%m-%d %H:%M}</span>
-  <nav class="nav"><a href="index.html">景氣循環儀表板 →</a></nav>
 </header>
-<p class="lede">
-  用途是<b>描述現在市場在發生什麼</b>，不是預測。每張卡片顯示最新值、近三個月變化、
-  近 12 個月走勢，以及（若適用）關鍵門檻位置。走勢線一律使用中性色 ——
-  上升不等於是好事，例如 VIX 與信用利差走高代表風險升高。
-  <br>區塊內先看<b>這個變化有沒有判讀意義</b>，再看<b>變化有多極端</b>
-  （變化量相對該指標自己歷史變化分布的 z 分數）。單向指標離門檻還很遠時
-  （例如 Sahm Rule 距觸發 0.50 尚有一段），它往哪動都不代表事情，會被排到後面，
-  也不計入「變化異常」。排在前面<b>不分方向</b>，只代表動得不尋常，可能是好事也可能是壞事。
-  公債殖利率區塊例外，固定依天期排列。
-</p>
+
 {demo_banner}
 {briefing.render(panel, cfg, health_df=h)}
 {health_panel(h, summary, unavailable, skipped or {})}
@@ -796,17 +806,7 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
                     + dotplot_table(projections, panel)},
              fixed_order=a.get("fixed_order"), last_obs=last_obs)}
 
-<footer>
-  <b>資料來源</b>　FRED 公開 CSV（免 API key）、Yahoo Finance。<br>
-  <b>單位處理</b>　Fed 淨流動性 = WALCL − WTREGEN − RRPONTSYD×1000。
-  WALCL 與 WTREGEN 以百萬美元計，RRPONTSYD 以十億美元計，
-  不做這個換算會讓逆回購的影響被縮小為千分之一。<br>
-  <b>Sahm Rule</b>　= 3個月移動平均失業率 − 前 12 個月該移動平均的最低值
-  （非原始失業率的最低值）。<br>
-  <b>限制</b>　本專案的景氣階段模型經檢驗<b>不具預測力</b>
-  （見 <code>validate.py</code> 與 <code>backtest.py</code>）。
-  本頁僅供理解現況，不構成投資建議。
-</footer>
+
 </div>{HOVER_JS}</body></html>"""
 
 

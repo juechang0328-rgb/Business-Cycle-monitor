@@ -169,73 +169,6 @@ def test_smoothing_makes_transitions_cycle_like():
 
 
 # ------------------------------------------------------------------ 儀表板
-def test_dashboard_renders_valid_page():
-    """以合成面板確認 HTML 產得出來、關鍵區塊都在。"""
-    import run
-    from bcm import dashboard, indicators as cfg
-
-    panel = run.synthetic_panel()
-    result, gp, ip = run.compute(panel, confirm=2)
-    cutoff = result.index[-1] - pd.DateOffset(years=3)
-    view = result.loc[result.index >= cutoff]
-    html = dashboard.render_html(view, gp.loc[gp.index >= cutoff],
-                                 ip.loc[ip.index >= cutoff], panel, cfg, demo=True)
-
-    assert html.startswith("<!DOCTYPE html>") and html.rstrip().endswith("</html>")
-    # 時間軸 + 時鐘 + 走勢圖 + 兩張實體經濟對照
-    assert html.count("<svg") == 3 + len(cfg.REALITY_CHECK)
-    assert "景氣循環監測" in html
-    assert "階段時間軸" in html and "實體經濟對照" in html
-    assert "這兩個分數是什麼" in html, "頁面需自行解釋 G 與 I"
-    assert "示範資料" in html or "示範頁面" in html         # demo 標記必須出現
-    stage = int(view.dropna(subset=["G", "I"]).iloc[-1]["stage"])
-    assert f"階段 {stage}" in html
-    for name in [s["name"] for s in cfg.GROWTH_SPECS]:
-        assert name in html
-
-
-def test_dashboard_marks_demo_only_when_asked():
-    import run
-    from bcm import dashboard, indicators as cfg
-
-    panel = run.synthetic_panel()
-    result, gp, ip = run.compute(panel, confirm=2)
-    html = dashboard.render_html(result, gp, ip, panel, cfg, demo=False)
-    assert "示範頁面" not in html
-
-
-def test_all_six_stages_have_colour_and_description():
-    from bcm import dashboard
-    for s in range(1, 7):
-        assert s in dashboard.STAGE_COLORS
-        assert s in dashboard.STAGE_COLORS_DARK
-        assert dashboard.STAGE_DESC[s].strip()
-
-
-def test_stage_colours_are_referenced_as_theme_variables():
-    """SVG 內必須用 CSS 變數，深色模式才會跟著切換。"""
-    from bcm import dashboard
-    assert dashboard.sc(3) == "var(--st3)"
-    assert dashboard.sc(0) == "var(--muted)"
-    assert dashboard.sc(None) == "var(--muted)"
-
-
-def test_short_window_warns_that_it_is_under_one_cycle():
-    """不足一個完整循環（4-5年）時必須明講，否則會誤導成『沒有循環』。"""
-    import run
-    from bcm import dashboard, indicators as cfg
-
-    panel = run.synthetic_panel()
-    result, gp, ip = run.compute(panel, confirm=2)
-    short = result.loc[result.index >= result.index[-1] - pd.DateOffset(years=2)]
-    html = dashboard.render_html(short, gp, ip, panel, cfg, full_result=short)
-    assert "短於一個完整景氣循環" in html
-
-    long_html = dashboard.render_html(short, gp, ip, panel, cfg, full_result=result)
-    assert "短於一個完整景氣循環" not in long_html
-
-
-# ------------------------------------------------------------------ 資料快取
 def test_merge_panel_new_data_wins_on_overlap():
     from bcm.sources import merge_panel
     idx = pd.date_range("2026-01-01", periods=3)
@@ -333,26 +266,6 @@ def test_weekend_dated_series_survives_business_day_alignment():
     assert out.loc["2026-01-05", "IC4WSA"] == 100
     assert out["SPX"].notna().any()
 
-
-def test_all_nan_column_does_not_crash_rendering():
-    """整欄無資料的指標不可讓輸出崩潰（例如序列剛加入、尚未抓到值）。"""
-    import run
-    from bcm import dashboard, indicators as cfg
-
-    panel = run.synthetic_panel()
-    panel[cfg.DASHBOARD[0][1]] = np.nan          # 把儀表板第一項清空
-    result, gp, ip = run.compute(panel, confirm=2)
-    text = run.render_text(result, gp, ip, panel)
-    assert "無資料" in text
-    html = dashboard.render_html(result, gp, ip, panel, cfg)
-    assert "無資料" in html
-
-
-# --------------------------------------------------------- 前瞻性序列汙染時間軸
-# 真實事故：FEDTARMD（FOMC 點陣圖）的觀測日標在被預測的年度（2029-01-01），
-# 面板的時間軸因此被拉長 596 個營業日，其他序列全被向前填補成一條平線。
-# 結果是儀表板上每一項的「近三個月變化」都顯示 0.00% —— 不報錯、不缺值，
-# 只是全部變成同一個數字。以下三個測試各自把一個環節釘住。
 
 def test_projection_column_does_not_extend_timeline():
     from bcm.sources import split_projections, to_business_days

@@ -3,11 +3,9 @@
 
 用法：
     python run.py                      # 終端機輸出當前階段
-    python run.py --html               # 另外產生 dashboard.html 儀表板
-    python run.py --html out.html      # 指定輸出檔名
-    python run.py --years 5            # 儀表板顯示近 5 年（預設 3 年）
+    python run.py --macro out.html     # 產生總經儀表板
     python run.py --csv out.csv        # 匯出完整時間序列
-    python run.py --demo --html        # 用合成資料預覽版面（不連網）
+    python run.py --demo --macro out.html   # 合成資料預覽版面（不連網）
 
 註：z-score 需要較長的歷史基準，因此實際抓取起點early於顯示區間。
 """
@@ -19,7 +17,7 @@ import unicodedata
 
 import pandas as pd
 
-from bcm import dashboard, derived, macro_dash
+from bcm import derived, macro_dash
 from bcm import indicators as cfg
 from bcm import scoring, stages
 from bcm.sources import (build_panel, last_obs_of, load_cache, merge_panel,
@@ -116,8 +114,6 @@ def main() -> int:
     p.add_argument("--years", type=int, default=3, help="儀表板顯示最近幾年（預設 3）")
     p.add_argument("--confirm", type=int, default=2,
                    help="換檔需連續確認的月數（預設 2；調小更敏感也更雜亂）")
-    p.add_argument("--html", nargs="?", const="dashboard.html", default=None,
-                   help="產生 HTML 儀表板")
     p.add_argument("--csv", help="匯出完整時間序列")
     p.add_argument("--demo", action="store_true", help="用合成資料預覽版面（不連網）")
     p.add_argument("--cache", help="快取檔路徑；抓取失敗時沿用，成功時併入更新")
@@ -212,22 +208,11 @@ def main() -> int:
         with open(args.macro, "w", encoding="utf-8") as f:
             f.write(html_macro)
         print(f"  總經儀表板已輸出：{args.macro}")
-        if not args.html and not args.csv:
+        if not args.csv:
             return 0
 
     result, g_parts, i_parts = compute(panel, confirm=args.confirm)
     print(render_text(result, g_parts, i_parts, panel))
-
-    if args.html:
-        cutoff = result.index[-1] - pd.DateOffset(years=args.years)
-        view = result.loc[result.index >= cutoff]
-        html = dashboard.render_html(view, g_parts.loc[g_parts.index >= cutoff],
-                                     i_parts.loc[i_parts.index >= cutoff],
-                                     panel, cfg, demo=args.demo,
-                                     full_result=result)
-        with open(args.html, "w", encoding="utf-8") as f:
-            f.write(html)
-        print(f"\n  儀表板已輸出：{args.html}")
 
     if args.csv:
         pd.concat([result, g_parts.add_prefix("G:"), i_parts.add_prefix("I:")],

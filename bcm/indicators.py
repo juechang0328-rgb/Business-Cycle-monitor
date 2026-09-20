@@ -330,7 +330,7 @@ MACRO_HEALTH = [
 
 # 這些區塊維持宣告順序，不依變化幅度重排 ——
 # 天期順序本身就是資訊，打亂後曲線形狀就讀不出來了。
-FIXED_ORDER_GROUPS = {"公債殖利率", "市場情緒", "資金流向"}
+FIXED_ORDER_GROUPS = {"公債殖利率", "市場情緒", "資金流向", "金融條件 NFCI"}
 
 # 儀表板分組：(區塊標題, [(顯示名稱, 代碼, 呈現方式, 門檻或說明)])
 # mode：pct=百分比變化、diff=絕對差、level=水準值
@@ -404,10 +404,12 @@ MACRO_GROUPS = [
         # 門檻必須同單位。先前誤用基點數值，導致任何值都判為「極度冒險」。
         ("高收益債利差", "BAMLH0A0HYM2", "level",
          {"calm": 3.00, "normal": 4.50, "stress": 5.00, "unit": "pp"}),
-        ("金融條件NFCI", "NFCI",         "level", {"tight": 0.0}),
-        ("NFCI·風險",    "NFCIRISK",     "level", {"tight": 0.0}),
-        ("NFCI·信用",    "NFCICREDIT",   "level", {"tight": 0.0}),
-        ("NFCI·槓桿",    "NFCILEVERAGE", "level", {"tight": 0.0}),
+    ]),
+    ("金融條件 NFCI", [
+        ("總指數",   "NFCI",         "level", {"tight": 0.0}),
+        ("風險",     "NFCIRISK",     "level", {"tight": 0.0}),
+        ("信用",     "NFCICREDIT",   "level", {"tight": 0.0}),
+        ("槓桿",     "NFCILEVERAGE", "level", {"tight": 0.0}),
     ]),
     ("原物料 · 能源", [
         ("WTI 原油",     "CL=F",     "pct", None),

@@ -95,17 +95,16 @@ def sentences(facts: dict, top: int = 3) -> list[str]:
         parts = []
         for m in big:
             direction = "上升" if m["change"] > 0 else "下降"
-            parts.append(f"{m['name']}（{m['group']}）{direction} "
-                         f"{abs(m['change']):,.2f}{_pct_or_pt(m['mode'])}"
-                         f"，為歷史 {abs(m['z']):.1f}σ")
-        out.append("三個月變化最不尋常的是：" + "；".join(parts) + "。")
+            parts.append(f"{m['name']}{direction} "
+                         f"{abs(m['change']):,.2f}{_pct_or_pt(m['mode'])}")
+        out.append("這三個月動得比平常大很多：" + "、".join(parts) + "。")
     else:
         top3 = facts["movers"][:top]
         if top3:
             parts = [f"{m['name']} {m['change']:+,.2f}{_pct_or_pt(m['mode'])}"
                      for m in top3]
-            out.append("沒有指標的變化達到 2σ；"
-                       "變化相對較大的是 " + "、".join(parts) + "。")
+            out.append("沒有特別異常的變化；動得比較多的是 "
+                       + "、".join(parts) + "。")
 
     alerts = [c for c in facts["crossings"] if c["level"] == "alert"]
     warns = [c for c in facts["crossings"] if c["level"] == "warn"]
@@ -123,8 +122,7 @@ def sentences(facts: dict, top: int = 3) -> list[str]:
         bad = facts["health_bad"]
         names = "、".join(bad["指標"].head(3).tolist())
         more = f" 等 {len(bad)} 項" if len(bad) > 3 else ""
-        out.append(f"⚠ 資料異常：{names}{more}，"
-                   f"該指標的判讀請暫時保留。")
+        out.append(f"⚠ {names}{more}的資料有問題，先不要看。")
 
     return out
 
@@ -141,9 +139,4 @@ def render(panel: pd.DataFrame, cfg,
     <span class="brief-date">{facts['asof'].date()}</span>
   </div>
   <ul class="brief-list">{body}</ul>
-  <p class="brief-foot">
-    這段摘要由當日數據依固定規則產生，<b>只描述已經發生的變化，不預測後市</b>。
-    「σ」指該指標本次三個月變化相對於自身歷史變化分布的標準差倍數，
-    用來跨指標比較變化是否不尋常。
-  </p>
 </section>"""

@@ -90,10 +90,15 @@ def test_health_problem_is_surfaced(panel):
     broken = panel.copy()
     broken["^VIX"] = np.nan
     text = "".join(briefing.sentences(briefing.collect(broken, cfg)))
-    assert "資料異常" in text and "保留" in text
+    assert "資料有問題" in text and "先不要看" in text
 
 
 def test_render_produces_section(panel):
     html = briefing.render(panel, cfg)
     assert 'class="brief"' in html and "今日重點" in html
-    assert "不預測後市" in html, "須載明這是描述而非預測"
+    # 先前這裡斷言頁面上必須印著「不預測後市」。改為檢查真正該保證的性質：
+    # 摘要本身不得出現預測或建議的用語 —— 貼一句免責聲明擋不住一句
+    # 「後市看好」，但這個檢查可以。
+    for word in ("預測", "將會", "可望", "看好", "看壞", "建議買", "建議賣",
+                 "目標價", "應該買", "逢低"):
+        assert word not in html, f"摘要不得出現預測／建議用語：{word}"

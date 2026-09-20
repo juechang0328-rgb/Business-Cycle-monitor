@@ -288,6 +288,30 @@ def load_twoii_seed() -> pd.Series:
         return pd.Series(dtype="float64")
 
 
+def save_twoii_seed(s: pd.Series) -> int:
+    """把櫃買指數的<b>真實觀測</b>寫回種子檔，回傳新增筆數。
+
+    只能餵真實觀測進來，不能餵面板欄位 —— 面板被向前填補到每個營業日，
+    台股休市那幾天（10/10、農曆年）的值是複製前一天來的。把那些寫進種子檔
+    等於把 405 筆假觀測存成歷史，而且之後再也分不出來哪些是真的。
+
+    櫃買中心的 OpenAPI 只給當月，所以這是唯一無法事後重建的序列：
+    今天沒存下來，明天就永遠補不回來。種子檔每天只長約 30 bytes、
+    適合進版控；大檔快取則隨時能從 FRED／Yahoo 重抓。
+    """
+    if s is None or s.empty:
+        return 0
+    seed = load_twoii_seed()
+    merged = s.combine_first(seed).sort_index() if len(seed) else s.sort_index()
+    added = len(merged) - len(seed)
+    if added <= 0:
+        return 0
+    out = merged.round(2)
+    out.index.name, out.name = "date", "close"
+    out.to_csv(TWOII_SEED)
+    return added
+
+
 def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
     """從櫃買中心取櫃買指數收盤。先試已知端點，失敗則查 OpenAPI 目錄。
 
@@ -313,11 +337,13 @@ def fetch_tpex_index(start: str = "2005-01-01") -> pd.Series:
     seed = load_twoii_seed()
 
     def merge(live: pd.Series) -> pd.Series:
-        if not len(seed):
-            return live.loc[start:]
-        out = live.combine_first(seed).sort_index()
-        print(f"  TPEx：併入歷史種子檔 {len(seed)} 筆"
-              f"（{seed.index[0].date()} 起），合計 {len(out)} 筆")
+        out = live.combine_first(seed).sort_index() if len(seed) else live
+        added = save_twoii_seed(live)
+        if added:
+            print(f"  櫃買歷史種子檔新增 {added} 筆")
+        if len(seed):
+            print(f"  TPEx：併入歷史種子檔 {len(seed)} 筆"
+                  f"（{seed.index[0].date()} 起），合計 {len(out)} 筆")
         return out.loc[start:]
 
     for name, url in tried:
@@ -728,18 +754,26 @@ def split_projections(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 # --------------------------------------------------------------------- 快取
-def projection_path(path: str) -> str:
-    """前瞻性序列的存放位置：與面板同目錄，檔名加 .projections。"""
+def _split_ext(path: str) -> tuple[str, str]:
+    """拆出主檔名與副檔名，.csv.gz 視為單一副檔名。"""
     import os
     base, ext = os.path.splitext(path)
-    return f"{base}.projections{ext or '.csv'}"
+    if ext == ".gz":
+        base, inner = os.path.splitext(base)
+        ext = inner + ext
+    return base, ext or ".csv"
+
+
+def projection_path(path: str) -> str:
+    """前瞻性序列的存放位置：與面板同目錄，檔名加 .projections。"""
+    base, ext = _split_ext(path)
+    return f"{base}.projections{ext}"
 
 
 def meta_path(path: str) -> str:
     """每欄最後觀測日的存放位置。"""
-    import os
-    base, ext = os.path.splitext(path)
-    return f"{base}.lastobs{ext or '.csv'}"
+    base, ext = _split_ext(path)
+    return f"{base}.lastobs{ext}"
 
 
 def load_meta(path: str) -> tuple[pd.Series, dict[str, str]]:
@@ -889,13 +923,16 @@ def save_cache(panel: pd.DataFrame, path: str,
     attached = projections_of(panel)
     attached_lo = last_obs_of(panel)
     alias_src = dict(getattr(panel, "attrs", {}).get("alias_source") or {})
+    # 有效位數收斂到 6 位：完整 float 精度存的是 4.939999999999999 這種東西，
+    # 壓縮後大 40%，而那多出來的位數對任何一個指標都沒有意義。
+    fmt = "%.6g"
     panel, inline = split_projections(panel)
-    panel.to_csv(path)
+    panel.to_csv(path, float_format=fmt)
     proj = _combine_proj(_combine_proj(attached, inline),
                          projections if projections is not None
                          else pd.DataFrame())
     if len(proj):
-        proj.to_csv(projection_path(path))
+        proj.to_csv(projection_path(path), float_format=fmt)
     lo = last_obs if last_obs is not None else attached_lo
     if lo is not None and len(lo):
         meta = lo.rename("last_obs").to_frame()

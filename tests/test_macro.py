@@ -629,3 +629,33 @@ def test_history_rank_positions_within_own_range():
 
     # 歷史太短時不硬給一個沒意義的百分位
     assert macro_dash.history_rank(s.head(20)) is None
+
+
+def test_nfci_summary_reads_all_four_together():
+    """四個數字分開看不出結論，綜合判讀要同時反映水準、分項與方向。"""
+    idx = pd.bdate_range("2024-01-01", periods=500)
+
+    def mk(total, risk, credit, lev, falling=True):
+        d = -0.2 if falling else 0.2
+        return pd.DataFrame({
+            "NFCI": np.linspace(total - d, total, 500),
+            "NFCIRISK": np.linspace(risk - d, risk, 500),
+            "NFCICREDIT": np.linspace(credit - d, credit, 500),
+            "NFCILEVERAGE": np.linspace(lev - d, lev, 500)}, index=idx)
+
+    # 明顯寬鬆、但槓桿偏緊、且還在往寬鬆走
+    t = macro_dash.nfci_summary(mk(-0.56, -0.63, -0.07, 0.06))
+    assert "明顯" in t and "寬鬆" in t
+    assert "槓桿" in t and "信用" not in t          # 只點名真正偏緊的分項
+    assert "持續" in t
+
+    # 全面偏鬆
+    t2 = macro_dash.nfci_summary(mk(-0.5, -0.5, -0.5, -0.5))
+    assert "三個分項都偏鬆" in t2
+
+    # 緊縮且方向相反 → 轉向
+    t3 = macro_dash.nfci_summary(mk(0.5, 0.5, 0.5, 0.5, falling=True))
+    assert "緊縮" in t3 and "轉向" in t3
+
+    # 缺資料時不硬掰
+    assert macro_dash.nfci_summary(pd.DataFrame(index=idx)) == ""
