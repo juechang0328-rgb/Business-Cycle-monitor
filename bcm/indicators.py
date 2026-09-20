@@ -282,7 +282,7 @@ MACRO_HEALTH = [
     ("標普500",         "^GSPC",        "daily"),
     ("納斯達克",        "^IXIC",        "daily"),
     ("台灣加權指數",    "^TWII",        "daily"),
-    ("櫃買OTC指數",     "^TWOII",       "daily"),
+    ("櫃買OTC（代理）",  "^TWOII",       "daily"),
     ("政策利率上限",    "DFEDTARU",     "daily"),
     ("政策利率下限",    "DFEDTARL",     "daily"),
     ("有效聯邦資金利率", "DFF",          "daily"),
@@ -328,7 +328,7 @@ MACRO_GROUPS = [
         ("標普500",     "^GSPC",  "pct",   None),
         ("納斯達克",    "^IXIC",  "pct",   None),
         ("台灣加權指數", "^TWII",  "pct",   None),
-        ("櫃買OTC指數",  "^TWOII", "pct",   None),
+        ("櫃買OTC（代理）", "^TWOII", "pct",   None),
         ("VIX",         "^VIX",   "level", {"calm": 15, "stress": 25}),
     ]),
     ("景氣動能", [
