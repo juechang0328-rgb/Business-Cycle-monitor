@@ -290,3 +290,33 @@ def test_policy_band_drawn_on_curve():
     out = macro_dash.yield_curve_svg(panel)
     assert "policy-band" in out, "應畫出政策利率區間"
     assert "shape-tag" in out, "應顯示型態判讀"
+
+
+# ------------------------------------------------------ 資料來源與性質標註
+def test_every_tenor_declares_security_type():
+    """每個天期都要標明是國庫券還是附息債券 —— 這決定它是不是曲線的輸入點。"""
+    from bcm import glossary
+    for code, (kind, auction) in glossary.TENOR_KIND.items():
+        meta = glossary.get(code)
+        assert meta is not None, code
+        assert kind in meta["src"], f"{code} 未標註證券類型"
+        assert "標售" in meta["src"]
+
+
+def test_cmt_methodology_is_documented():
+    """CMT 用的是報價而非成交價，且本身是擬合曲線 —— 這點必須寫明。"""
+    from bcm import glossary
+    f = glossary.get("DGS3")["formula"]
+    assert "報價" in f and "monotone convex" in f
+    assert "實際標售的證券" in glossary.get("DGS3")["what"], \
+        "須說明該天期是輸入點而非內插值"
+
+
+def test_curve_card_states_provenance():
+    idx = pd.bdate_range(end="2026-09-18", periods=300)
+    base = pd.Series(np.linspace(4.0, 4.3, 300), index=idx)
+    panel = pd.DataFrame({c: base + o for c, o in
+                          [("DGS3MO", .5), ("DGS2", .1), ("DGS10", 0), ("DGS30", .2)]})
+    out = macro_dash.yield_curve_svg(panel)
+    assert "實際標售的證券" in out
+    assert "內插" in out
