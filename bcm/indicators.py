@@ -195,6 +195,8 @@ MACRO_FRED = [
     # 公債殖利率全期限（原始數據，利差由此推導而來）
     "DGS1MO", "DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3",
     "DGS5", "DGS7", "DGS10", "DGS20", "DGS30",
+    # 政策利率：曲線的左端錨點
+    "DFEDTARU", "DFEDTARL", "DFF",
     # 央行流動性（單位不一致，見 bcm/derived.py）
     "WALCL", "WTREGEN", "RRPONTSYD", "DTWEXBGS",
     # 金融壓力
@@ -267,6 +269,9 @@ MACRO_HEALTH = [
     ("VIX",             "^VIX",         "daily"),
     ("標普500",         "^GSPC",        "daily"),
     ("納斯達克",        "^IXIC",        "daily"),
+    ("政策利率上限",    "DFEDTARU",     "daily"),
+    ("政策利率下限",    "DFEDTARL",     "daily"),
+    ("有效聯邦資金利率", "DFF",          "daily"),
     ("1個月期殖利率",   "DGS1MO",       "daily"),
     ("3個月期殖利率",   "DGS3MO",       "daily"),
     ("6個月期殖利率",   "DGS6MO",       "daily"),
@@ -322,6 +327,8 @@ MACRO_GROUPS = [
         ("通膨預期10Y",  "T10YIE",       "level", None),
     ]),
     ("公債殖利率", [
+        ("政策利率上限", "DFEDTARU", "level", None),
+        ("有效聯邦資金利率", "DFF", "level", None),
         ("1個月",  "DGS1MO", "level", None),
         ("3個月",  "DGS3MO", "level", None),
         ("6個月",  "DGS6MO", "level", None),

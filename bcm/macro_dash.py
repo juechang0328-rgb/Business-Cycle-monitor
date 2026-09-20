@@ -385,6 +385,12 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
 .zchip{margin-left:6px;font-size:10.5px;color:var(--warn);
  border:1px solid currentColor;border-radius:99px;padding:0 5px;white-space:nowrap}
 .curve-lab{font-size:11.5px;font-weight:700}
+.policy-band{fill:var(--muted);opacity:.16}
+.policy-lab{font-size:10.5px;fill:var(--muted)}
+.shape{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.shape-tag{font-size:15px;font-weight:700;padding:3px 11px;border-radius:99px;
+ background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.shape-note{font-size:12.5px;color:var(--muted);flex:1;min-width:260px;line-height:1.6}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted)}
 .legend span{display:flex;align-items:center;gap:5px}
 .legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
@@ -536,6 +542,70 @@ def _curve_at(panel: pd.DataFrame, when: pd.Timestamp) -> list[tuple[str, float]
     return out
 
 
+# 曲線型態判讀。教科書通常只教正斜率／倒掛／平坦三種，
+# 但實務上「駝峰」與「U 型」同樣常見 —— 後者正是政策利率高、
+# 市場預期降息、長端又有期限溢酬時的典型形狀。
+FLAT_BAND = 0.25          # |10Y−3M| 在此範圍內視為平坦
+STEEP_BAND = 1.50
+
+
+def classify_curve(curve: list[tuple[str, float]]) -> tuple[str, str]:
+    """回傳 (型態名稱, 說明)。curve 為 [(天期標籤, 殖利率), ...] 由短到長。
+
+    分成「主型態」與「次要特徵」兩層，因為兩者可以同時成立 ——
+    2024-25 年的美債曲線就是典型：整體仍倒掛（10Y 低於 3M），
+    但中段落底後長端回升，形狀像一個碗。只講其中一個都不完整。
+    """
+    d = dict(curve)
+    labels = [l for l, _ in curve]
+    if len(curve) < 4:
+        return "資料不足", "可用天期太少，無法判斷形狀。"
+
+    short = d.get("3M", d.get("1M", curve[0][1]))
+    long_ = d.get("10Y", curve[-1][1])
+    overall = long_ - short
+
+    vals = [v for _, v in curve]
+    n = len(vals)
+    i_min, i_max = vals.index(min(vals)), vals.index(max(vals))
+    depth = max(vals) - min(vals)
+
+    # 主型態：由整體斜率決定
+    if overall < -FLAT_BAND:
+        main = "倒掛"
+        note = (f"10 年期低於短端 {abs(overall):.2f} 個百分點。"
+                "歷史上倒掛領先衰退約 12-18 個月，但倒掛<b>當下</b>不是賣出訊號 —— "
+                "真正的警訊是倒掛解除時的牛市陡峭化。")
+    elif overall > STEEP_BAND:
+        main = "陡峭正斜率"
+        note = (f"10 年期高於短端 {overall:.2f} 個百分點。"
+                "多見於降息循環中後段，或市場定價強勁復甦與通膨。")
+    elif overall > FLAT_BAND:
+        main = "正斜率（正常）"
+        note = (f"10 年期高於短端 {overall:.2f} 個百分點，"
+                "符合教科書的常態形狀：借越久、要求的補償越多。")
+    else:
+        main = "平坦"
+        note = (f"10 年期與短端僅差 {overall:+.2f} 個百分點。"
+                "常見於倒掛前後的過渡期，方向尚未確立。")
+
+    # 次要特徵：最低／最高點是否落在中段
+    extra = ""
+    if 0 < i_min < n - 1 and depth > FLAT_BAND:
+        rebound = vals[-1] - vals[i_min]
+        if rebound > FLAT_BAND:
+            main += " · U 型"
+            extra = (f"　最低點落在 {labels[i_min]}，長端再回升 {rebound:.2f} 個百分點。"
+                     "這不是教科書的標準三型，而是政策利率壓住短端、"
+                     "市場預期降息壓低中段、長端又因期限溢酬與財政供給而偏高的結果 —— "
+                     "緊縮週期末段相當常見。")
+    elif 0 < i_max < n - 1 and depth > FLAT_BAND:
+        main += " · 駝峰"
+        extra = (f"　最高點落在 {labels[i_max]}，兩端較低。"
+                 "通常代表市場認為升息還有最後一段，但之後會轉為降息。")
+    return main, note + extra
+
+
 def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
     """殖利率曲線：現在 vs 三個月前 vs 一年前，疊在同一張圖上比較形狀變化。
 
@@ -578,6 +648,7 @@ def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
         p.append(f'<text x="{px(i):.1f}" y="{m["t"]+ph+20}" class="tick" '
                  f'text-anchor="middle">{lab}</text>')
 
+    end_labels: list[tuple[float, float, str, int]] = []
     for name, curve, slot in curves:
         d = dict(curve)
         pts, last = [], None
@@ -596,9 +667,35 @@ def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
                          f'fill="var(--s{slot})"><title>{name} {lab} '
                          f'{d[lab]:.2f}%</title></circle>')
         if last:
-            p.append(f'<text x="{last[0]+10:.1f}" y="{last[1]+4:.1f}" '
-                     f'class="curve-lab" fill="var(--s{slot})">{name}</text>')
+            end_labels.append((last[0], last[1], name, slot))
+    # 右側標籤依 y 排序後強制間隔，避免三條線末端接近時文字疊在一起
+    end_labels.sort(key=lambda t: t[1])
+    prev_y = -1e9
+    for x, y, name, slot in end_labels:
+        y = max(y, prev_y + 14)
+        prev_y = y
+        p.append(f'<text x="{x+10:.1f}" y="{y+4:.1f}" '
+                 f'class="curve-lab" fill="var(--s{slot})">{name}</text>')
+
+    # 政策利率區間：曲線的左端錨點，畫成水平帶
+    band = None
+    for up, lo_c in [("DFEDTARU", "DFEDTARL")]:
+        if up in panel.columns and lo_c in panel.columns:
+            u, l = panel[up].dropna(), panel[lo_c].dropna()
+            if len(u) and len(l):
+                band = (float(u.iloc[-1]), float(l.iloc[-1]))
+    if band and lo <= band[0] <= hi:
+        y_u, y_l = py(band[0]), py(band[1])
+        p.append(f'<rect x="{m["l"]}" y="{min(y_u,y_l):.1f}" width="{pw}" '
+                 f'height="{max(abs(y_l-y_u),2):.1f}" class="policy-band">'
+                 f'<title>政策利率目標區間 {band[1]:.2f}–{band[0]:.2f}%</title></rect>')
+        p.append(f'<text x="{m["l"]+6}" y="{min(y_u,y_l)-5:.1f}" '
+                 f'class="policy-lab">政策利率 {band[1]:.2f}–{band[0]:.2f}%</text>')
     p.append("</svg>")
+
+    shape, shape_note = classify_curve(curves[0][1])
+    shape_html = (f'<div class="shape"><span class="shape-tag">{_esc(shape)}</span>'
+                  f'<span class="shape-note">{shape_note}</span></div>')
 
     legend = "".join(
         f'<span><i style="background:var(--s{slot})"></i>{name}</span>'
@@ -615,7 +712,7 @@ def yield_curve_svg(panel: pd.DataFrame, w: int = 860, h: int = 320) -> str:
              f'<th class="num">現在</th><th class="num">3個月前</th>'
              f'<th class="num">變化</th></tr></thead><tbody>{rows}</tbody>'
              f'</table></details>')
-    return (f'<div class="card">{"".join(p)}'
+    return (f'<div class="card">{shape_html}{"".join(p)}'
             f'<div class="legend">{legend}</div>'
             f'<p class="sub2" style="margin:8px 0 0">'
             f'橫軸為天期，採等距排列。曲線整體上移＝殖利率全面走升；'

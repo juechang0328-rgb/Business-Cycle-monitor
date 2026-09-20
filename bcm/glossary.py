@@ -299,6 +299,27 @@ for _code, _how in _TENOR_HOW.items():
         what=f"借錢給美國政府 {_yrs} 的年化報酬率，視為該天期的無風險利率。",
         how=_how))
 
+META["DFEDTARU"] = dict(
+    full="聯邦資金利率目標區間上限",
+    src="FRED · DFEDTARU（日頻，2008 年 12 月起改為區間制）",
+    formula="FOMC 決議值，非市場價格",
+    what="Fed 設定的政策利率區間上限，所有其他利率的起點。",
+    how="這是<b>行政決定</b>不是市場定價，所以走勢呈階梯狀。"
+        "殖利率曲線的短端會緊貼著它，長端則反映市場對未來的看法。")
+META["DFEDTARL"] = dict(
+    full="聯邦資金利率目標區間下限",
+    src="FRED · DFEDTARL（日頻）",
+    formula="FOMC 決議值",
+    what="政策利率區間下限，與上限相差通常為 0.25 個百分點。",
+    how="與上限構成 Fed 允許隔夜拆款利率遊走的區間。")
+META["DFF"] = dict(
+    full="有效聯邦資金利率 Effective Federal Funds Rate",
+    src="FRED · DFF（紐約 Fed 計算，日頻）",
+    formula="銀行間隔夜無擔保拆款的成交量加權中位數",
+    what="市場上<b>實際成交</b>的隔夜利率，會落在目標區間內。",
+    how="若它貼近區間上緣，代表準備金相對稀缺、資金偏緊；"
+        "貼近下緣則代表資金充裕。這個位置的變化常早於 Fed 調整政策。")
+
 META["^IXIC"] = dict(
     full="納斯達克綜合指數 NASDAQ Composite",
     src="Yahoo Finance · ^IXIC",

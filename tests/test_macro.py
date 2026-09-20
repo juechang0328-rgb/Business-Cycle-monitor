@@ -245,3 +245,48 @@ def test_fixed_order_groups_are_not_resorted():
     order = lambda h: re.findall(r'class="m-name">([^<]+)<', h)
     assert order(sorted_html)[0] == "劇變", "預設應依變化幅度排序"
     assert order(fixed_html) == ["平穩", "劇變"], "指定固定順序時應維持宣告順序"
+
+
+# ------------------------------------------------------------ 曲線型態判讀
+CURVES = {
+    "正斜率":  [("3M",4.2),("1Y",4.3),("2Y",4.4),("5Y",4.7),("10Y",5.0),("30Y",5.3)],
+    "倒掛":    [("3M",5.4),("1Y",5.1),("2Y",4.8),("5Y",4.4),("10Y",4.2),("30Y",4.3)],
+    "倒掛U":   [("3M",5.3),("1Y",4.6),("2Y",4.2),("5Y",4.1),("10Y",4.3),("30Y",4.6)],
+    "駝峰":    [("3M",3.8),("1Y",4.3),("2Y",4.6),("5Y",4.4),("10Y",4.1),("30Y",3.9)],
+    "平坦":    [("3M",4.30),("1Y",4.32),("2Y",4.28),("5Y",4.35),("10Y",4.40),("30Y",4.45)],
+    "陡峭":    [("3M",2.0),("1Y",2.4),("2Y",2.9),("5Y",3.4),("10Y",3.9),("30Y",4.2)],
+}
+
+
+@pytest.mark.parametrize("key,expect", [
+    ("正斜率", "正斜率"), ("倒掛", "倒掛"), ("倒掛U", "倒掛"),
+    ("駝峰", "正斜率"), ("平坦", "平坦"), ("陡峭", "陡峭"),
+])
+def test_curve_primary_shape(key, expect):
+    assert expect in macro_dash.classify_curve(CURVES[key])[0]
+
+
+def test_curve_secondary_feature():
+    """主型態與次要特徵可同時成立 —— 整體倒掛但中段落底後長端回升。"""
+    assert "U 型" in macro_dash.classify_curve(CURVES["倒掛U"])[0]
+    assert "駝峰" in macro_dash.classify_curve(CURVES["駝峰"])[0]
+    assert "U 型" not in macro_dash.classify_curve(CURVES["倒掛"])[0], \
+        "長端未實質回升時不該標成 U 型"
+
+
+def test_curve_needs_enough_tenors():
+    assert macro_dash.classify_curve([("3M", 4.0), ("10Y", 4.2)])[0] == "資料不足"
+
+
+def test_policy_band_drawn_on_curve():
+    idx = pd.bdate_range(end="2026-09-18", periods=400)
+    base = pd.Series(np.linspace(4.0, 4.4, 400), index=idx)
+    panel = pd.DataFrame({
+        "DGS3MO": base + 0.5, "DGS2": base + 0.1, "DGS10": base,
+        "DGS30": base + 0.2,
+        "DFEDTARU": pd.Series(4.75, index=idx),
+        "DFEDTARL": pd.Series(4.50, index=idx),
+    })
+    out = macro_dash.yield_curve_svg(panel)
+    assert "policy-band" in out, "應畫出政策利率區間"
+    assert "shape-tag" in out, "應顯示型態判讀"
