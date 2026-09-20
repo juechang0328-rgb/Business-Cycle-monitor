@@ -654,11 +654,14 @@ def test_prefetch_runs_before_batch_and_beats_proxy(monkeypatch):
     assert set(pre) == {"^TWOII"}
     assert sources.ALIAS_SOURCE["^TWOII"] == "^TWOII"
 
-    # 批次下載抓到的是代理，預抓的指數要蓋過去
+    # 批次下載抓到的是代理，預抓的指數要蓋過去 —— 值和來源標記都要
     close = pd.DataFrame({"^TWOII": 46.0, "^GSPC": 7000.0}, index=idx)
+    sources.ALIAS_SOURCE["^TWOII"] = "006201.TWO"   # 模擬 pick_alias 改寫
     out = sources.apply_prefetched(close, pre)
     assert (out["^TWOII"] == 200.0).all()
     assert (out["^GSPC"] == 7000.0).all()
+    assert sources.ALIAS_SOURCE["^TWOII"] == "^TWOII", \
+        "來源標記沒蓋回去的話，merge_panel 會把兩種尺度接在同一欄"
 
 
 def test_prefetch_failure_leaves_batch_result_alone(monkeypatch):
@@ -676,6 +679,32 @@ def test_prefetch_failure_leaves_batch_result_alone(monkeypatch):
     assert pre == {}
     close = pd.DataFrame({"^TWOII": 46.0}, index=idx)
     assert (sources.apply_prefetched(close, pre)["^TWOII"] == 46.0).all()
+
+
+def test_prefetch_source_label_survives_pick_alias(monkeypatch):
+    """值來自原生來源、標記卻寫著 ETF —— 會讓來源變更防護失效。
+
+    實際事故：櫃買指數的值已經換成櫃買中心的資料，但 pick_alias 在
+    預抓之後才跑，看到 yfinance 抓到了 ETF 就把標記改寫回 006201.TWO。
+    merge_panel 比對標記後認為沒換來源，於是把 ETF（約 44 元）和
+    指數（約 402 點）接在同一欄，不報錯，只是數字全錯。
+    """
+    from bcm import sources
+
+    idx = pd.bdate_range("2026-09-01", periods=14)
+    alias = {"^TWOII": ["^TWOII", "006201.TWO"]}
+    monkeypatch.setitem(sources.NATIVE_SOURCE, "^TWOII",
+                        lambda start: pd.Series([402.0] * 14, index=idx))
+
+    pre = sources.prefetch_aliases(alias, "2026-01-01")
+    # yfinance 批次下載抓到了較低順位的 ETF，pick_alias 會改寫標記
+    close = pd.DataFrame({"^TWOII": np.nan, "006201.TWO": 44.0}, index=idx)
+    close, chosen = sources.pick_alias(close, alias)
+    assert sources.ALIAS_SOURCE["^TWOII"] == "006201.TWO"   # 被改寫了
+
+    close = sources.apply_prefetched(close, pre)
+    assert sources.ALIAS_SOURCE["^TWOII"] == "TPEx", "標記要跟著值一起蓋回去"
+    assert (close["^TWOII"] == 402.0).all()
 
 
 def test_tpex_parser_handles_roc_and_western_dates():
@@ -721,7 +750,8 @@ def test_native_source_wins_over_yahoo(monkeypatch):
                         lambda *a, **k: pytest.fail("不該呼叫 Yahoo"))
 
     pre = sources.prefetch_aliases({"^TWOII": ["^TWOII"]}, "2026-01-01")
-    assert (pre["^TWOII"] == 245.0).all()
+    series, src = pre["^TWOII"]
+    assert (series == 245.0).all() and src == "TPEx"
     assert sources.ALIAS_SOURCE["^TWOII"] == "TPEx"
 
 
@@ -738,7 +768,8 @@ def test_native_source_failure_falls_back_to_yahoo(monkeypatch):
                         lambda sym, start="2005-01-01", retries=2:
                         pd.Series([46.0] * 5, index=idx))
     pre = sources.prefetch_aliases({"^TWOII": ["006201.TWO"]}, "2026-01-01")
-    assert (pre["^TWOII"] == 46.0).all()
+    series, src = pre["^TWOII"]
+    assert (series == 46.0).all() and src == "006201.TWO"
 
 
 def test_discover_uses_catalog_basepath(monkeypatch):

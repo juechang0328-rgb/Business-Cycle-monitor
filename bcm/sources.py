@@ -358,7 +358,7 @@ def prefetch_aliases(alias: dict[str, list[str]], start: str,
     重試次數刻意壓低：GitHub Actions 的出口 IP 被 Yahoo 限流得很兇，
     真的被擋時多試幾次也救不回來，只是讓每天的排程白等幾十秒。
     """
-    out: dict[str, pd.Series] = {}
+    out: dict[str, tuple[pd.Series, str]] = {}
     for canon, cands in alias.items():
         if not cands:
             continue
@@ -370,8 +370,9 @@ def prefetch_aliases(alias: dict[str, list[str]], start: str,
                 print(f"  · {canon} 原生來源失敗：{e}")
             else:
                 if not s.empty:
-                    out[canon] = s
-                    ALIAS_SOURCE[canon] = NATIVE_NAME.get(canon, canon)
+                    name = NATIVE_NAME.get(canon, canon)
+                    out[canon] = (s, name)
+                    ALIAS_SOURCE[canon] = name
                     print(f"  {canon} 取自原生來源（{len(s)} 筆，"
                           f"起自 {s.index[0].date()}）")
                     continue
@@ -381,7 +382,7 @@ def prefetch_aliases(alias: dict[str, list[str]], start: str,
             print(f"  · 預抓 {cands[0]} 失敗：{e}")
             continue
         if not s.empty:
-            out[canon] = s
+            out[canon] = (s, cands[0])
             ALIAS_SOURCE[canon] = cands[0]
             print(f"  Yahoo：{canon} 預抓成功（{len(s)} 筆，"
                   f"起自 {s.index[0].date()}）")
@@ -389,11 +390,19 @@ def prefetch_aliases(alias: dict[str, list[str]], start: str,
 
 
 def apply_prefetched(close: pd.DataFrame,
-                     pre: dict[str, pd.Series]) -> pd.DataFrame:
-    """把預抓到的序列寫回面板，覆蓋批次下載可能取到的備援代理。"""
-    for canon, s in pre.items():
+                     pre: dict[str, tuple[pd.Series, str]]) -> pd.DataFrame:
+    """把預抓到的序列寫回面板，覆蓋批次下載可能取到的備援代理。
+
+    來源標記也要一起蓋回去。pick_alias 在這之後才跑，它看到 yfinance
+    抓到了較低順位的代理就會把 ALIAS_SOURCE 改寫成代理的代號 ——
+    於是「值來自櫃買中心、標記寫著 ETF」，merge_panel 的來源變更防護
+    比對標記後認為沒換來源，就把兩種尺度的資料接在同一欄裡
+    （ETF 約 44 元接上指數約 402 點），而且完全不會報錯。
+    """
+    for canon, (s, src) in pre.items():
         close = close.reindex(close.index.union(s.index))
         close[canon] = s.reindex(close.index)
+        ALIAS_SOURCE[canon] = src
     return close
 
 
