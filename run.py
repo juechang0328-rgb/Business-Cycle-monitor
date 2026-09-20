@@ -91,6 +91,28 @@ def render_text(result, g_parts, i_parts, panel) -> str:
     return "\n".join(lines + ["", "=" * 62])
 
 
+def freshness_problem(panel: pd.DataFrame, max_days: int,
+                      fetch_failed: str | None) -> str | None:
+    """資料是否新到可以信任。回傳問題描述，沒問題則回 None。
+
+    分開處理兩件事：
+    - 抓取整批失敗：即使快取還很新也要立刻報錯，否則要等好幾天才察覺。
+    - 快取變舊：用真實觀測日判斷（面板被向前填補到最後一個營業日，
+      拿面板日期來看永遠是今天）。
+    """
+    if fetch_failed:
+        return f"資料抓取失敗，本次沿用快取：{fetch_failed}"
+    lo = last_obs_of(panel)
+    if not len(lo):
+        return None
+    newest = pd.to_datetime(lo).max()
+    age = (pd.Timestamp.today().normalize() - newest).days
+    if age > max_days:
+        return (f"最新觀測是 {newest.date()}（{age} 天前），"
+                f"超過容許的 {max_days} 天 —— 上游可能已經斷了")
+    return None
+
+
 def synthetic_panel() -> pd.DataFrame:
     """合成面板：僅供離線預覽版面，數值無意義。"""
     import numpy as np
@@ -130,6 +152,10 @@ def main() -> int:
                    help="一併抓取總經儀表板所需序列（流動性、通膨、情緒）")
     p.add_argument("--offline", action="store_true",
                    help="只讀快取、完全不連網（需搭配 --cache）")
+    p.add_argument("--fail-if-stale", type=int, metavar="DAYS",
+                   help="抓取失敗、或最新觀測超過 DAYS 天時以非零狀態結束。"
+                        "沒有這個開關的話，抓取失敗只會印警告然後沿用快取，"
+                        "排程仍是綠燈 —— 網頁靜靜地變舊，沒有人會知道")
     args = p.parse_args()
 
     if args.profile:
@@ -150,6 +176,7 @@ def main() -> int:
             return 1
         print(f"  離線模式：讀取 {args.cache}，最後更新 {panel.index[-1].date()}")
     else:
+        fetch_failed = None
         cached = load_cache(args.cache) if args.cache else None
         try:
             fresh = build_panel(cfg.YAHOO_TICKERS, cfg.FRED_CODES, start=args.start)
@@ -187,6 +214,14 @@ def main() -> int:
             print(f"⚠ 抓取失敗（{e}），改用快取資料，最後更新於 "
                   f"{cached.index[-1].date()}（{stale} 天前）", file=sys.stderr)
             panel = cached
+            fetch_failed = str(e)
+
+    if args.fail_if_stale is not None and not args.offline and not args.demo:
+        problem = freshness_problem(panel, args.fail_if_stale,
+                                    locals().get("fetch_failed"))
+        if problem:
+            print(f"\n✗ {problem}", file=sys.stderr)
+            return 2
 
     # 前瞻性序列（FOMC 點陣圖）獨立取出：它的觀測日在未來，留在面板裡會把
     # 時間軸拉到未來，其他序列被向前填補成平線，所有「近三個月變化」變成 0。

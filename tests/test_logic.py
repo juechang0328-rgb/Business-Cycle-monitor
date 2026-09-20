@@ -767,3 +767,39 @@ def test_twoii_seed_merges_with_live(monkeypatch, tmp_path):
     monkeypatch.setattr(sources, "discover_tpex_index_paths", lambda: [])
     fallback = sources.fetch_tpex_index(start="2000-01-01")
     assert len(fallback) == 2 and fallback.iloc[-1] == 999.0
+
+
+def test_stale_data_fails_loudly():
+    """抓取失敗時沿用快取但回傳成功 —— 排程綠燈、網頁靜靜變舊。
+
+    通知的前提是它要真的報錯，所以這個關卡比通知本身更重要。
+    """
+    import run
+
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=30)
+    fresh = pd.DataFrame({"A": 1.0}, index=idx)
+    fresh.attrs["last_obs"] = {"A": str(idx[-1].date())}
+
+    # 資料很新且抓取成功 → 沒問題
+    assert run.freshness_problem(fresh, 5, None) is None
+
+    # 抓取失敗 → 即使快取還新也要立刻報錯，不能等它變舊才發現
+    msg = run.freshness_problem(fresh, 5, "Yahoo 429")
+    assert msg and "抓取失敗" in msg and "Yahoo 429" in msg
+
+    # 快取變舊 → 用真實觀測日判斷
+    old = pd.DataFrame({"A": 1.0}, index=idx)
+    old.attrs["last_obs"] = {
+        "A": str((pd.Timestamp.today().normalize()
+                  - pd.Timedelta(days=9)).date())}
+    msg2 = run.freshness_problem(old, 5, None)
+    assert msg2 and "9 天前" in msg2
+
+    # 關鍵：面板索引比真實觀測日新得多。若拿索引判斷會過關，
+    # 拿真實觀測日判斷才會抓到 —— 這正是這個關卡存在的理由。
+    idx_age = (pd.Timestamp.today().normalize() - old.index[-1]).days
+    assert idx_age <= 5, "面板索引看起來很新"
+    assert run.freshness_problem(old, 5, None) is not None, "但真實觀測日已經過期"
+
+    # 沒有觀測日紀錄時不要亂報錯
+    assert run.freshness_problem(pd.DataFrame({"A": [1.0]}), 5, None) is None
