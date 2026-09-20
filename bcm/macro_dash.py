@@ -11,7 +11,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from . import derived, health
+from . import derived, glossary, health
 
 
 def _esc(t) -> str:
@@ -112,7 +112,15 @@ def sparkline(s: pd.Series, w: int = 190, h: int = 40,
     px = lambda i: 2 + i / max(n - 1, 1) * (w - 4)
     py = lambda v: 3 + (hi - v) / (hi - lo) * (h - 6)
 
+    # 把資料點一併嵌入，讓瀏覽器自己做游標查值 —— 不需要伺服器。
+    # 日期用 YYMMDD 六碼、數值依量級決定小數位，以控制頁面大小。
+    dec = 0 if abs(hi) >= 1000 else (2 if abs(hi) >= 1 else 4)
+    d_attr = ",".join(t.strftime("%y%m%d") for t in d.index)
+    v_attr = ",".join(f"{v:.{dec}f}" for v in d)
     p = [f'<svg viewBox="0 0 {w} {h}" class="spark" preserveAspectRatio="none" '
+         f'data-d="{d_attr}" data-v="{v_attr}" '
+         f'data-lo="{lo:.6g}" data-hi="{hi:.6g}" '
+         f'data-pad="{2}" data-w="{w}" data-h="{h}" '
          f'role="img" aria-label="近 {months} 個月走勢">']
     for key, tv in shown:
         p.append(f'<line x1="2" y1="{py(tv):.1f}" x2="{w-2}" y2="{py(tv):.1f}" '
@@ -122,6 +130,8 @@ def sparkline(s: pd.Series, w: int = 190, h: int = 40,
     p.append(f'<polyline points="{pts}" class="spark-line"/>')
     p.append(f'<circle cx="{px(n-1):.1f}" cy="{py(float(d.iloc[-1])):.1f}" '
              f'r="2.6" class="spark-dot"/>')
+    p.append(f'<line class="spark-cross" x1="0" y1="2" x2="0" y2="{h-2}"/>')
+    p.append(f'<circle class="spark-hit" cx="0" cy="0" r="3"/>')
     p.append("</svg>")
     return "".join(p)
 
@@ -157,6 +167,24 @@ def threshold_note(code: str, cur: float, th: dict | None) -> tuple[str, str]:
     if "tight" in th:
         return (("條件偏緊", "warn") if cur > th["tight"] else ("條件寬鬆", "calm"))
     return "", ""
+
+
+def glossary_block(code: str) -> str:
+    """卡片上的 ⓘ 展開說明。
+
+    用 <details> 而非右鍵選單或 hover 提示：右鍵會與瀏覽器原生選單衝突、
+    行動裝置沒有右鍵、hover 在觸控裝置上也不存在。<details> 三者皆可用，
+    而且不需要 JavaScript。
+    """
+    m = glossary.get(code)
+    if not m:
+        return ""
+    rows = [("定義", m["what"]), ("計算", m["formula"]),
+            ("來源", m["src"]), ("怎麼看", m["how"])]
+    body = "".join(f'<dt>{k}</dt><dd>{v}</dd>' for k, v in rows)
+    return (f'<details class="gloss"><summary>ⓘ 說明</summary>'
+            f'<div class="gloss-body"><p class="gloss-full">{m["full"]}</p>'
+            f'<dl>{body}</dl></div></details>')
 
 
 UNIT_BY_MODE = {"yoy": "%", "m3ann": "%", "pct": "%", "level": ""}
@@ -207,6 +235,7 @@ def metric_card(panel: pd.DataFrame, name: str, code: str,
         f'<span class="m-chg-lab">{CHANGE_LABEL.get(mode, "近3個月")}</span>{zchip}</div>'
         f'  {sparkline(snap["series"], thresholds=th)}'
         f'  <div class="m-sub">{snap["last_date"].date()}　{_esc(code)}</div>'
+        f'  {glossary_block(code)}'
         f'</div>')
 
 
@@ -320,6 +349,62 @@ def groups_html(panel: pd.DataFrame, groups: list[tuple],
     return "".join(out)
 
 
+# 游標查值：全部在瀏覽器裡跑，不需要伺服器。
+# 資料已嵌在每個 <svg> 的 data-d / data-v 屬性裡。
+HOVER_JS = """
+<div id="tip"></div>
+<script>
+(function(){
+  var tip = document.getElementById('tip');
+  function fmtDate(s){            // YYMMDD -> YYYY-MM-DD
+    return '20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6);
+  }
+  function attach(svg){
+    var ds = svg.getAttribute('data-d'), vs = svg.getAttribute('data-v');
+    if(!ds || !vs) return;
+    var dates = ds.split(','), vals = vs.split(',').map(Number);
+    var lo = +svg.getAttribute('data-lo'), hi = +svg.getAttribute('data-hi');
+    var W = +svg.getAttribute('data-w'), H = +svg.getAttribute('data-h');
+    var pad = +svg.getAttribute('data-pad');
+    var cross = svg.querySelector('.spark-cross');
+    var hit = svg.querySelector('.spark-hit');
+    var n = vals.length;
+    function px(i){ return pad + i/Math.max(n-1,1)*(W-pad*2); }
+    function py(v){ return 3 + (hi-v)/(hi-lo)*(H-6); }
+
+    function move(ev){
+      var r = svg.getBoundingClientRect();
+      var cx = (ev.touches ? ev.touches[0].clientX : ev.clientX);
+      var cy = (ev.touches ? ev.touches[0].clientY : ev.clientY);
+      var frac = (cx - r.left) / r.width;
+      var i = Math.round(frac * (n-1));
+      if(i < 0) i = 0; if(i > n-1) i = n-1;
+      svg.classList.add('on');
+      cross.setAttribute('x1', px(i)); cross.setAttribute('x2', px(i));
+      hit.setAttribute('cx', px(i)); hit.setAttribute('cy', py(vals[i]));
+      tip.innerHTML = fmtDate(dates[i]) + '　<b>' + vals[i] + '</b>';
+      tip.classList.add('on');
+      var tw = tip.offsetWidth, th = tip.offsetHeight;
+      var left = cx + 12, top = cy - th - 10;
+      if(left + tw > window.innerWidth - 8) left = cx - tw - 12;
+      if(top < 8) top = cy + 16;
+      tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    }
+    function leave(){
+      svg.classList.remove('on'); tip.classList.remove('on');
+    }
+    svg.addEventListener('mousemove', move);
+    svg.addEventListener('mouseleave', leave);
+    svg.addEventListener('touchstart', move, {passive:true});
+    svg.addEventListener('touchmove', move, {passive:true});
+    svg.addEventListener('touchend', leave);
+  }
+  document.querySelectorAll('svg.spark').forEach(attach);
+})();
+</script>
+"""
+
+
 # ------------------------------------------------------------------- 頁面
 CSS = """
 :root{
@@ -415,6 +500,27 @@ h1{font-size:22px;margin:0;letter-spacing:.3px}
 .spark-dot{fill:var(--accent)}
 .spark-th{stroke:var(--muted);stroke-width:1;opacity:.45}
 .spark-empty{height:40px;display:flex;align-items:center;color:var(--muted);font-size:11.5px}
+.gloss{margin-top:7px;border-top:1px solid var(--line);padding-top:6px}
+.gloss summary{cursor:pointer;font-size:11px;color:var(--muted);list-style:none;
+ display:inline-block;padding:1px 0}
+.gloss summary::-webkit-details-marker{display:none}
+.gloss summary:hover{color:var(--accent)}
+.gloss[open] summary{color:var(--accent);margin-bottom:5px}
+.gloss-body{font-size:11.5px;line-height:1.65}
+.gloss-full{margin:0 0 6px;font-weight:600;color:var(--ink);font-size:12px}
+.gloss dl{margin:0;display:grid;grid-template-columns:44px 1fr;gap:3px 8px}
+.gloss dt{color:var(--muted);font-size:10.5px;padding-top:1px}
+.gloss dd{margin:0;color:var(--muted)}
+.gloss b{color:var(--ink)}
+.spark-cross{stroke:var(--muted);stroke-width:1;opacity:0;pointer-events:none}
+.spark-hit{fill:var(--accent);opacity:0;pointer-events:none}
+.spark.on .spark-cross,.spark.on .spark-hit{opacity:.85}
+.spark{cursor:crosshair}
+#tip{position:fixed;z-index:50;background:var(--card);border:1px solid var(--line);
+ border-radius:7px;padding:6px 9px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.14);
+ pointer-events:none;opacity:0;transition:opacity .08s;white-space:nowrap}
+#tip.on{opacity:1}
+#tip b{font-variant-numeric:tabular-nums}
 .m-sub{font-size:10.5px;color:var(--muted);opacity:.85;
  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sub2{color:var(--muted);font-size:11.5px}
@@ -480,7 +586,7 @@ def render(panel: pd.DataFrame, cfg, skipped: dict[str, list[str]] | None = None
   （見 <code>validate.py</code> 與 <code>backtest.py</code>）。
   本頁僅供理解現況，不構成投資建議。
 </footer>
-</div></body></html>"""
+</div>{HOVER_JS}</body></html>"""
 
 
 # ------------------------------------------------------- 變化幅度標準化排序
